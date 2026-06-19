@@ -319,6 +319,63 @@ end
 
 local Gui = mountGui()
 
+-- ===== Logo loader (LowHubIcon) =====
+-- getcustomasset butuh FILE LOKAL, bukan URL. Jadi: download URL -> writefile -> getcustomasset.
+local ICON_URL = "https://cdn.discordapp.com/attachments/1517489999216381974/1517595956659490947/LowHubIcon.png?ex=6a36dadf&is=6a35895f&hm=e0b9a3ee7a8d5272848e5dbd5c0daabe8c3b82ac3bfb0f119b70daab12f5f8aa"
+local ICON_FILE = "LowHubIcon.png"
+
+local function httpGet(url)
+    local fns = {
+        function() return request and request({ Url = url, Method = "GET" }) end,
+        function() return syn and syn.request and syn.request({ Url = url, Method = "GET" }) end,
+        function() return http and http.request and http.request({ Url = url, Method = "GET" }) end,
+        function() return http_request and http_request({ Url = url, Method = "GET" }) end,
+        function() return (fluxus and fluxus.request or fluxusrequest) and (fluxus and fluxus.request or fluxusrequest)({ Url = url, Method = "GET" }) end,
+    }
+    for _, f in ipairs(fns) do
+        local ok, res = pcall(f)
+        if ok and type(res) == "table" and res.Body and #res.Body > 0 then
+            return res.Body
+        end
+    end
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok and type(body) == "string" and #body > 0 then return body end
+    return nil
+end
+
+local function customAsset(path)
+    if typeof(getcustomasset) == "function" then
+        local ok, id = pcall(getcustomasset, path)
+        if ok and id then return id end
+    end
+    if typeof(getsynasset) == "function" then
+        local ok, id = pcall(getsynasset, path)
+        if ok and id then return id end
+    end
+    return nil
+end
+
+local function resolveIcon()
+    if typeof(isfile) == "function" and isfile(ICON_FILE) then
+        local id = customAsset(ICON_FILE)
+        if id then return id end
+    end
+    if typeof(writefile) == "function" then
+        local body = httpGet(ICON_URL)
+        if body then
+            local okw = pcall(writefile, ICON_FILE, body)
+            if okw then
+                local id = customAsset(ICON_FILE)
+                if id then return id end
+            end
+        end
+    end
+    return customAsset(ICON_FILE) or customAsset("LowHubIcon")
+end
+
+-- resolve sekali, dipakai badge atas + icon minimize
+local LOGO = resolveIcon()
+
 -- ===== Main Window =====
 local Win = Instance.new("Frame")
 Win.Name = "Main"
@@ -329,9 +386,8 @@ Win.BackgroundTransparency = 0.06
 Win.BorderSizePixel = 0
 Win.Parent = Gui
 corner(Win, 14)
-shadow(Win, 60)
 local winStroke = stroke(Win, Theme.Accent, 1.4)
-winStroke.Transparency = 0.35
+winStroke.Transparency = 0.55
 gradient(Win, Color3.fromRGB(22,20,32), Color3.fromRGB(14,13,20), 90)
 
 -- Top bar
@@ -844,65 +900,7 @@ end
 
 selectTab("Info")
 
--- ===== Minimize ke floating icon (LowHubIcon.png) =====
--- Coba load gambar lokal lewat executor; fallback badge "L".
-local ICON_URL = "https://cdn.discordapp.com/attachments/1517489999216381974/1517595956659490947/LowHubIcon.png?ex=6a36dadf&is=6a35895f&hm=e0b9a3ee7a8d5272848e5dbd5c0daabe8c3b82ac3bfb0f119b70daab12f5f8aa"
-local ICON_FILE = "LowHubIcon.png"
-
--- HTTP GET serbaguna lintas executor; balikin body string atau nil.
-local function httpGet(url)
-    local fns = {
-        function() return request and request({ Url = url, Method = "GET" }) end,
-        function() return syn and syn.request and syn.request({ Url = url, Method = "GET" }) end,
-        function() return http and http.request and http.request({ Url = url, Method = "GET" }) end,
-        function() return http_request and http_request({ Url = url, Method = "GET" }) end,
-        function() return (fluxus and fluxus.request or fluxusrequest) and (fluxus and fluxus.request or fluxusrequest)({ Url = url, Method = "GET" }) end,
-    }
-    for _, f in ipairs(fns) do
-        local ok, res = pcall(f)
-        if ok and type(res) == "table" and res.Body and #res.Body > 0 then
-            return res.Body
-        end
-    end
-    -- fallback game:HttpGet (sebagian executor support)
-    local ok, body = pcall(function() return game:HttpGet(url) end)
-    if ok and type(body) == "string" and #body > 0 then return body end
-    return nil
-end
-
-local function customAsset(path)
-    if typeof(getcustomasset) == "function" then
-        local ok, id = pcall(getcustomasset, path)
-        if ok and id then return id end
-    end
-    if typeof(getsynasset) == "function" then
-        local ok, id = pcall(getsynasset, path)
-        if ok and id then return id end
-    end
-    return nil
-end
-
-local function resolveIcon()
-    -- 1) kalau file sudah ada lokal, langsung pakai
-    if typeof(isfile) == "function" and isfile(ICON_FILE) then
-        local id = customAsset(ICON_FILE)
-        if id then return id end
-    end
-    -- 2) download dari URL ke file lokal, lalu pakai
-    if typeof(writefile) == "function" then
-        local body = httpGet(ICON_URL)
-        if body then
-            local okw = pcall(writefile, ICON_FILE, body)
-            if okw then
-                local id = customAsset(ICON_FILE)
-                if id then return id end
-            end
-        end
-    end
-    -- 3) coba nama file polos yang mungkin sudah ada
-    return customAsset(ICON_FILE) or customAsset("LowHubIcon")
-end
-
+-- ===== Minimize ke floating icon (LowHubIcon) =====
 local IconBtn = Instance.new("TextButton")
 IconBtn.Name = "LowHubIcon"
 IconBtn.Size = UDim2.fromOffset(56, 56)
@@ -918,7 +916,7 @@ local icStroke = stroke(IconBtn, Theme.Accent, 1.4)
 icStroke.Transparency = 0.3
 makeDraggable(IconBtn, IconBtn)
 
-local iconImg = resolveIcon()
+local iconImg = LOGO
 if iconImg then
     local img = Instance.new("ImageLabel")
     img.Size = UDim2.new(1, -16, 1, -16)
