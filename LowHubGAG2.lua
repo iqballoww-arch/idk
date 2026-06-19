@@ -412,18 +412,29 @@ local Badge = Instance.new("Frame")
 Badge.Size = UDim2.fromOffset(26, 26)
 Badge.Position = UDim2.fromOffset(14, 9)
 Badge.BackgroundColor3 = Theme.Accent
+Badge.BackgroundTransparency = LOGO and 1 or 0
 Badge.BorderSizePixel = 0
 Badge.Parent = Top
 corner(Badge, 8)
-gradient(Badge, Theme.Accent, Theme.AccentDim, 135)
-local BadgeT = Instance.new("TextLabel")
-BadgeT.Size = UDim2.fromScale(1, 1)
-BadgeT.BackgroundTransparency = 1
-BadgeT.Font = Enum.Font.GothamBold
-BadgeT.TextSize = 15
-BadgeT.TextColor3 = Color3.fromRGB(255,255,255)
-BadgeT.Text = "L"
-BadgeT.Parent = Badge
+if LOGO then
+    local bimg = Instance.new("ImageLabel")
+    bimg.Size = UDim2.fromScale(1, 1)
+    bimg.BackgroundTransparency = 1
+    bimg.Image = LOGO
+    bimg.ScaleType = Enum.ScaleType.Fit
+    bimg.Parent = Badge
+    corner(bimg, 8)
+else
+    gradient(Badge, Theme.Accent, Theme.AccentDim, 135)
+    local BadgeT = Instance.new("TextLabel")
+    BadgeT.Size = UDim2.fromScale(1, 1)
+    BadgeT.BackgroundTransparency = 1
+    BadgeT.Font = Enum.Font.GothamBold
+    BadgeT.TextSize = 15
+    BadgeT.TextColor3 = Color3.fromRGB(255,255,255)
+    BadgeT.Text = "L"
+    BadgeT.Parent = Badge
+end
 
 local Logo = Instance.new("TextLabel")
 Logo.Size = UDim2.new(0, 220, 0, 18)
