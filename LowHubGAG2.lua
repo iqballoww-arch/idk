@@ -17,17 +17,19 @@ local LocalPlayer = Players.LocalPlayer
 
 -- ===== Theme (Low Hub purple) =====
 local Theme = {
-    Bg      = Color3.fromRGB(14,14,18),
-    Panel   = Color3.fromRGB(22,22,30),
-    Panel2  = Color3.fromRGB(30,30,42),
-    Stroke  = Color3.fromRGB(55,50,85),
-    Accent  = Color3.fromRGB(150,90,255),
-    Accent2 = Color3.fromRGB(108,92,231),
-    Text    = Color3.fromRGB(235,235,245),
-    Sub     = Color3.fromRGB(150,150,170),
-    Off     = Color3.fromRGB(60,60,75),
-    Good    = Color3.fromRGB(95,220,140),
-    Bad     = Color3.fromRGB(235,95,110),
+    Bg       = Color3.fromRGB(16,15,23),
+    Panel    = Color3.fromRGB(24,23,34),
+    Panel2   = Color3.fromRGB(33,31,48),
+    Stroke   = Color3.fromRGB(60,52,95),
+    Accent   = Color3.fromRGB(151,93,255),
+    Accent2  = Color3.fromRGB(120,80,235),
+    AccentDim= Color3.fromRGB(88,60,170),
+    Hover    = Color3.fromRGB(40,38,58),
+    Text     = Color3.fromRGB(236,235,245),
+    Sub      = Color3.fromRGB(150,148,170),
+    Off      = Color3.fromRGB(55,52,72),
+    Good     = Color3.fromRGB(96,222,142),
+    Bad      = Color3.fromRGB(236,96,112),
 }
 
 -- ===== Shared State =====
@@ -253,6 +255,44 @@ local function pad(inst, p)
     return u
 end
 
+-- gradient ungu (vertikal halus) untuk aksen
+local function gradient(inst, c1, c2, rot)
+    local g = Instance.new("UIGradient")
+    g.Color = ColorSequence.new(c1, c2)
+    g.Rotation = rot or 90
+    g.Parent = inst
+    return g
+end
+
+-- soft shadow di belakang frame
+local function shadow(inst, size)
+    local s = Instance.new("ImageLabel")
+    s.Name = "Shadow"
+    s.BackgroundTransparency = 1
+    s.Image = "rbxassetid://6014261993"
+    s.ImageColor3 = Color3.fromRGB(0,0,0)
+    s.ImageTransparency = 0.45
+    s.ScaleType = Enum.ScaleType.Slice
+    s.SliceCenter = Rect.new(49,49,450,450)
+    s.Size = UDim2.new(1, (size or 40), 1, (size or 40))
+    s.Position = UDim2.new(0, -(size or 40)/2, 0, -(size or 40)/2)
+    s.ZIndex = 0
+    s.Parent = inst
+    return s
+end
+
+-- hover halus untuk tombol/row
+local function hoverFx(btn, base, over)
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.15),
+            { BackgroundColor3 = over }):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.15),
+            { BackgroundColor3 = base }):Play()
+    end)
+end
+
 local function makeDraggable(handle, target)
     local dragging, startPos, startMouse
     handle.InputBegan:Connect(function(i)
@@ -282,70 +322,102 @@ local Gui = mountGui()
 -- ===== Main Window =====
 local Win = Instance.new("Frame")
 Win.Name = "Main"
-Win.Size = UDim2.fromOffset(620, 380)
-Win.Position = UDim2.new(0.5, -310, 0.5, -190)
+Win.Size = UDim2.fromOffset(640, 400)
+Win.Position = UDim2.new(0.5, -320, 0.5, -200)
 Win.BackgroundColor3 = Theme.Bg
+Win.BackgroundTransparency = 0.06
 Win.BorderSizePixel = 0
 Win.Parent = Gui
-corner(Win, 12)
-stroke(Win, Theme.Stroke, 1.5)
+corner(Win, 14)
+shadow(Win, 60)
+local winStroke = stroke(Win, Theme.Accent, 1.4)
+winStroke.Transparency = 0.35
+gradient(Win, Color3.fromRGB(22,20,32), Color3.fromRGB(14,13,20), 90)
 
 -- Top bar
 local Top = Instance.new("Frame")
-Top.Size = UDim2.new(1, 0, 0, 38)
+Top.Size = UDim2.new(1, 0, 0, 44)
 Top.BackgroundColor3 = Theme.Panel
+Top.BackgroundTransparency = 0.15
 Top.BorderSizePixel = 0
 Top.Parent = Win
-corner(Top, 12)
+corner(Top, 14)
 local TopFix = Instance.new("Frame")
-TopFix.Size = UDim2.new(1, 0, 0, 14)
-TopFix.Position = UDim2.new(0, 0, 1, -14)
+TopFix.Size = UDim2.new(1, 0, 0, 16)
+TopFix.Position = UDim2.new(0, 0, 1, -16)
 TopFix.BackgroundColor3 = Theme.Panel
+TopFix.BackgroundTransparency = 0.15
 TopFix.BorderSizePixel = 0
 TopFix.Parent = Top
 makeDraggable(Top, Win)
 
+-- logo badge
+local Badge = Instance.new("Frame")
+Badge.Size = UDim2.fromOffset(26, 26)
+Badge.Position = UDim2.fromOffset(14, 9)
+Badge.BackgroundColor3 = Theme.Accent
+Badge.BorderSizePixel = 0
+Badge.Parent = Top
+corner(Badge, 8)
+gradient(Badge, Theme.Accent, Theme.AccentDim, 135)
+local BadgeT = Instance.new("TextLabel")
+BadgeT.Size = UDim2.fromScale(1, 1)
+BadgeT.BackgroundTransparency = 1
+BadgeT.Font = Enum.Font.GothamBold
+BadgeT.TextSize = 15
+BadgeT.TextColor3 = Color3.fromRGB(255,255,255)
+BadgeT.Text = "L"
+BadgeT.Parent = Badge
+
 local Logo = Instance.new("TextLabel")
-Logo.Size = UDim2.new(0, 200, 1, 0)
-Logo.Position = UDim2.fromOffset(14, 0)
+Logo.Size = UDim2.new(0, 220, 0, 18)
+Logo.Position = UDim2.fromOffset(48, 7)
 Logo.BackgroundTransparency = 1
 Logo.Font = Enum.Font.GothamBold
 Logo.TextSize = 15
-Logo.TextColor3 = Theme.Accent
+Logo.TextColor3 = Theme.Text
 Logo.TextXAlignment = Enum.TextXAlignment.Left
-Logo.Text = "Low Hub  Finder"
+Logo.Text = "Low Hub"
 Logo.Parent = Top
 
 local Sub = Instance.new("TextLabel")
-Sub.Size = UDim2.new(0, 260, 1, 0)
-Sub.Position = UDim2.fromOffset(150, 0)
+Sub.Size = UDim2.new(0, 260, 0, 14)
+Sub.Position = UDim2.fromOffset(48, 24)
 Sub.BackgroundTransparency = 1
 Sub.Font = Enum.Font.Gotham
-Sub.TextSize = 12
+Sub.TextSize = 11
 Sub.TextColor3 = Theme.Sub
 Sub.TextXAlignment = Enum.TextXAlignment.Left
-Sub.Text = "Grow a Garden 2"
+Sub.Text = "Grow a Garden 2  •  Finder"
 Sub.Parent = Top
 
-local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.fromOffset(28, 28)
-CloseBtn.Position = UDim2.new(1, -34, 0, 5)
-CloseBtn.BackgroundColor3 = Theme.Panel2
-CloseBtn.Text = "✕"
-CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 14
-CloseBtn.TextColor3 = Theme.Text
-CloseBtn.Parent = Top
-corner(CloseBtn, 6)
+local function topBtn(txt, xoff, col)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.fromOffset(28, 28)
+    b.Position = UDim2.new(1, xoff, 0, 8)
+    b.BackgroundColor3 = Theme.Panel2
+    b.Text = txt
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 14
+    b.TextColor3 = col or Theme.Text
+    b.AutoButtonColor = false
+    b.Parent = Top
+    corner(b, 8)
+    hoverFx(b, Theme.Panel2, Theme.Hover)
+    return b
+end
+local MinBtn = topBtn("—", -72, Theme.Sub)
+local CloseBtn = topBtn("✕", -38, Theme.Bad)
 
 -- Sidebar
 local Side = Instance.new("Frame")
-Side.Size = UDim2.new(0, 150, 1, -46)
-Side.Position = UDim2.fromOffset(8, 44)
+Side.Size = UDim2.new(0, 152, 1, -56)
+Side.Position = UDim2.fromOffset(10, 50)
 Side.BackgroundColor3 = Theme.Panel
+Side.BackgroundTransparency = 0.25
 Side.BorderSizePixel = 0
 Side.Parent = Win
-corner(Side, 10)
+corner(Side, 12)
 local SideList = Instance.new("UIListLayout")
 SideList.Padding = UDim.new(0, 6)
 SideList.SortOrder = Enum.SortOrder.LayoutOrder
@@ -354,8 +426,8 @@ pad(Side, 8)
 
 -- Content host
 local Content = Instance.new("Frame")
-Content.Size = UDim2.new(1, -174, 1, -46)
-Content.Position = UDim2.fromOffset(166, 44)
+Content.Size = UDim2.new(1, -180, 1, -56)
+Content.Position = UDim2.fromOffset(170, 50)
 Content.BackgroundTransparency = 1
 Content.Parent = Win
 
