@@ -38,7 +38,7 @@ local State = {
     selectedTame = {},   -- name -> true
     orderTame    = {},   -- urutan select (prioritas), nama pertama = prioritas tertinggi
     maxPrice     = 0,
-    tameInterval = 2,
+    tameInterval = 0.5,
     autoTame     = false,
     protectPet   = false,
     -- Pet Finder
@@ -409,25 +409,28 @@ end
 local MinBtn = topBtn("—", -72, Theme.Sub)
 local CloseBtn = topBtn("✕", -38, Theme.Bad)
 
--- Sidebar
-local Side = Instance.new("Frame")
-Side.Size = UDim2.new(0, 152, 1, -56)
-Side.Position = UDim2.fromOffset(10, 50)
-Side.BackgroundColor3 = Theme.Panel
-Side.BackgroundTransparency = 0.25
-Side.BorderSizePixel = 0
-Side.Parent = Win
-corner(Side, 12)
-local SideList = Instance.new("UIListLayout")
-SideList.Padding = UDim.new(0, 6)
-SideList.SortOrder = Enum.SortOrder.LayoutOrder
-SideList.Parent = Side
-pad(Side, 8)
+-- ===== Tab bar (horizontal pills) =====
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, -20, 0, 38)
+TabBar.Position = UDim2.fromOffset(10, 52)
+TabBar.BackgroundColor3 = Theme.Panel
+TabBar.BackgroundTransparency = 0.3
+TabBar.BorderSizePixel = 0
+TabBar.Parent = Win
+corner(TabBar, 11)
+local TabList = Instance.new("UIListLayout")
+TabList.FillDirection = Enum.FillDirection.Horizontal
+TabList.Padding = UDim.new(0, 6)
+TabList.HorizontalAlignment = Enum.HorizontalAlignment.Left
+TabList.VerticalAlignment = Enum.VerticalAlignment.Center
+TabList.SortOrder = Enum.SortOrder.LayoutOrder
+TabList.Parent = TabBar
+pad(TabBar, 5)
 
 -- Content host
 local Content = Instance.new("Frame")
-Content.Size = UDim2.new(1, -180, 1, -56)
-Content.Position = UDim2.fromOffset(170, 50)
+Content.Size = UDim2.new(1, -20, 1, -102)
+Content.Position = UDim2.fromOffset(10, 98)
 Content.BackgroundTransparency = 1
 Content.Parent = Win
 
@@ -440,22 +443,31 @@ local function selectTab(name)
     end
     for n, btn in pairs(TabBtns) do
         local on = (n == name)
-        btn.BackgroundColor3 = on and Theme.Accent2 or Theme.Panel2
-        btn.TextColor3 = on and Theme.Text or Theme.Sub
+        TweenService:Create(btn, TweenInfo.new(0.18), {
+            BackgroundColor3 = on and Theme.Accent2 or Theme.Panel2,
+            BackgroundTransparency = on and 0 or 0.4,
+        }):Play()
+        btn.TextColor3 = on and Color3.fromRGB(255,255,255) or Theme.Sub
     end
 end
 
 local function addTab(name, label)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 34)
+    btn.AutomaticSize = Enum.AutomaticSize.X
+    btn.Size = UDim2.new(0, 0, 1, 0)
     btn.BackgroundColor3 = Theme.Panel2
+    btn.BackgroundTransparency = 0.4
     btn.Text = label
     btn.Font = Enum.Font.GothamMedium
     btn.TextSize = 13
     btn.TextColor3 = Theme.Sub
     btn.AutoButtonColor = false
-    btn.Parent = Side
+    btn.Parent = TabBar
     corner(btn, 8)
+    local bp = Instance.new("UIPadding")
+    bp.PaddingLeft = UDim.new(0, 14)
+    bp.PaddingRight = UDim.new(0, 14)
+    bp.Parent = btn
     TabBtns[name] = btn
 
     local page = Instance.new("ScrollingFrame")
@@ -464,6 +476,7 @@ local function addTab(name, label)
     page.BorderSizePixel = 0
     page.ScrollBarThickness = 4
     page.ScrollBarImageColor3 = Theme.Accent
+    page.ScrollBarImageTransparency = 0.3
     page.CanvasSize = UDim2.new()
     page.AutomaticCanvasSize = Enum.AutomaticSize.Y
     page.Visible = false
@@ -722,9 +735,9 @@ local function addMultiDropdown(parent, title, desc, stateTbl, orderTbl, getOpti
 end
 
 -- ===== Tabs =====
-addTab("Info",    "💡  Info")
-addTab("Wild",    "⭐  Wild Pets")
-addTab("Finder",  "🎯  Pet Finder")
+addTab("Info",    "Info")
+addTab("Wild",    "Wild Pets")
+addTab("Finder",  "Pet Finder")
 
 -- ----- Info tab -----
 do
@@ -830,6 +843,126 @@ do
 end
 
 selectTab("Info")
+
+-- ===== Minimize ke floating icon (LowHubIcon.png) =====
+-- Coba load gambar lokal lewat executor; fallback badge "L".
+local ICON_URL = "https://cdn.discordapp.com/attachments/1517489999216381974/1517595956659490947/LowHubIcon.png?ex=6a36dadf&is=6a35895f&hm=e0b9a3ee7a8d5272848e5dbd5c0daabe8c3b82ac3bfb0f119b70daab12f5f8aa"
+local ICON_FILE = "LowHubIcon.png"
+
+-- HTTP GET serbaguna lintas executor; balikin body string atau nil.
+local function httpGet(url)
+    local fns = {
+        function() return request and request({ Url = url, Method = "GET" }) end,
+        function() return syn and syn.request and syn.request({ Url = url, Method = "GET" }) end,
+        function() return http and http.request and http.request({ Url = url, Method = "GET" }) end,
+        function() return http_request and http_request({ Url = url, Method = "GET" }) end,
+        function() return (fluxus and fluxus.request or fluxusrequest) and (fluxus and fluxus.request or fluxusrequest)({ Url = url, Method = "GET" }) end,
+    }
+    for _, f in ipairs(fns) do
+        local ok, res = pcall(f)
+        if ok and type(res) == "table" and res.Body and #res.Body > 0 then
+            return res.Body
+        end
+    end
+    -- fallback game:HttpGet (sebagian executor support)
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok and type(body) == "string" and #body > 0 then return body end
+    return nil
+end
+
+local function customAsset(path)
+    if typeof(getcustomasset) == "function" then
+        local ok, id = pcall(getcustomasset, path)
+        if ok and id then return id end
+    end
+    if typeof(getsynasset) == "function" then
+        local ok, id = pcall(getsynasset, path)
+        if ok and id then return id end
+    end
+    return nil
+end
+
+local function resolveIcon()
+    -- 1) kalau file sudah ada lokal, langsung pakai
+    if typeof(isfile) == "function" and isfile(ICON_FILE) then
+        local id = customAsset(ICON_FILE)
+        if id then return id end
+    end
+    -- 2) download dari URL ke file lokal, lalu pakai
+    if typeof(writefile) == "function" then
+        local body = httpGet(ICON_URL)
+        if body then
+            local okw = pcall(writefile, ICON_FILE, body)
+            if okw then
+                local id = customAsset(ICON_FILE)
+                if id then return id end
+            end
+        end
+    end
+    -- 3) coba nama file polos yang mungkin sudah ada
+    return customAsset(ICON_FILE) or customAsset("LowHubIcon")
+end
+
+local IconBtn = Instance.new("TextButton")
+IconBtn.Name = "LowHubIcon"
+IconBtn.Size = UDim2.fromOffset(56, 56)
+IconBtn.Position = UDim2.new(0, 24, 0.5, -28)
+IconBtn.BackgroundColor3 = Theme.Panel
+IconBtn.BackgroundTransparency = 0.05
+IconBtn.Text = ""
+IconBtn.AutoButtonColor = false
+IconBtn.Visible = false
+IconBtn.Parent = Gui
+corner(IconBtn, 14)
+local icStroke = stroke(IconBtn, Theme.Accent, 1.4)
+icStroke.Transparency = 0.3
+makeDraggable(IconBtn, IconBtn)
+
+local iconImg = resolveIcon()
+if iconImg then
+    local img = Instance.new("ImageLabel")
+    img.Size = UDim2.new(1, -16, 1, -16)
+    img.Position = UDim2.fromOffset(8, 8)
+    img.BackgroundTransparency = 1
+    img.Image = iconImg
+    img.ScaleType = Enum.ScaleType.Fit
+    img.Parent = IconBtn
+    corner(img, 10)
+else
+    -- fallback badge bergradien
+    gradient(IconBtn, Theme.Accent, Theme.AccentDim, 135)
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.fromScale(1, 1)
+    t.BackgroundTransparency = 1
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 28
+    t.TextColor3 = Color3.fromRGB(255,255,255)
+    t.Text = "L"
+    t.Parent = IconBtn
+end
+
+local function setMinimized(min)
+    if min then
+        Win.Visible = false
+        IconBtn.Visible = true
+    else
+        IconBtn.Visible = false
+        Win.Visible = true
+    end
+end
+
+-- klik icon = buka panel; klik tombol minus = sembunyikan ke icon
+local iconDownPos
+IconBtn.MouseButton1Down:Connect(function()
+    iconDownPos = UserInputService:GetMouseLocation()
+end)
+IconBtn.MouseButton1Click:Connect(function()
+    -- jangan buka kalau baru saja di-drag
+    local now = UserInputService:GetMouseLocation()
+    if iconDownPos and (now - iconDownPos).Magnitude > 6 then return end
+    setMinimized(false)
+end)
+MinBtn.MouseButton1Click:Connect(function() setMinimized(true) end)
 CloseBtn.MouseButton1Click:Connect(function() Gui:Destroy() end)
 
 -- ===== Floating Finder Panel =====
