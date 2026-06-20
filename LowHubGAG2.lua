@@ -49,6 +49,11 @@ local Theme = {
     Bad      = Color3.fromRGB(236,96,112),
 }
 
+-- ===== Hidden config (tidak ditampilkan di UI) =====
+local API_URL      = "http://nano-1.nura.host:5064/api/pets"
+local SCAN_WAIT    = 4   -- delay (detik) setelah join sebelum ambil keputusan hop, biar map ke-load
+local HOP_COOLDOWN = 8   -- jeda minimal antar teleport (detik), anti spam rate-limit
+
 -- ===== Shared State =====
 local State = {
     -- Wild Pets
@@ -58,25 +63,16 @@ local State = {
     tameInterval = 0.5,
     autoTame     = false,
     protectPet   = false,
-    -- Pet Finder
+    -- Pet Finder (API-driven)
     selectedFind = {},   -- name -> true
     orderFind    = {},
     petFinder    = false,
-    finderInterval = 2,
-    autoRejoin   = false,
-    -- Auto Hop
-    autoHop      = false,
-    hopInterval  = 8,
-    scanWait     = 4,
-    skipFull     = true,
-    lastHopAt    = 0,   -- os.time() epoch; persist lintas server biar hopInterval akurat
+    finderInterval = 5,  -- query interval ke API (detik)
+    autoHop      = false,-- targeted hop: teleport ke server yang API bilang ada pet
+    lastHopAt    = 0,    -- os.time() epoch; cooldown anti spam teleport, persist lintas server
     -- Webhook
     webhookUrl     = "",
     webhookEnabled = false,
-    -- Global Finder (query API agregat: pet di server lain tanpa kita di sana)
-    globalUrl      = "http://nano-1.nura.host:5064/api/pets",
-    globalEnabled  = false,
-    globalInterval = 5,
 }
 
 -- ===== Config Persistence (bertahan lintas server / teleport) =====
@@ -88,13 +84,11 @@ local CONFIG_FILE = "LowHubGAG2_config.json"
 local SAVED_KEYS = {
     "selectedFind", "orderFind",
     "selectedTame", "orderTame",
-    "autoHop", "autoRejoin", "petFinder",
+    "autoHop", "petFinder",
     "autoTame", "protectPet",
-    "hopInterval", "scanWait", "skipFull",
     "finderInterval", "tameInterval", "maxPrice",
     "lastHopAt",
     "webhookUrl", "webhookEnabled",
-    "globalUrl", "globalEnabled", "globalInterval",
 }
 
 local function saveConfig()
@@ -494,16 +488,14 @@ end
 -- Global Finder: query API agregat (huki/wishub) untuk tahu pet di server lain
 -- TANPA kita harus ada di server itu. Balikin list terurut sisa-waktu terbanyak.
 -- { {name, rarity, jobId, placeId, remaining, players, source}, ... }
-local function fetchGlobalPets()
-    local base = State.globalUrl
-    if not base or base == "" then return nil, "URL kosong" end
+local function fetchApiPets()
     -- filter ke pet yang dipilih di Finder (kalau ada). API dukung name=A,B,C
     local names = {}
     for nm in pairs(State.selectedFind) do names[#names + 1] = nm end
-    local url = base
+    local url = API_URL
     if #names > 0 then
-        local sep = base:find("?", 1, true) and "&" or "?"
-        url = base .. sep .. "name=" .. table.concat(names, ",")
+        local sep = API_URL:find("?", 1, true) and "&" or "?"
+        url = API_URL .. sep .. "name=" .. table.concat(names, ",")
     end
     local raw = httpGet(url)
     if not raw then return nil, "request gagal" end
@@ -654,7 +646,6 @@ Sub.Parent = Top
 -- Forward-declare: dipakai topbar quick-off (di bawah) DAN tab Pet Finder (nanti),
 -- harus satu local yang sama supaya keduanya saling sinkron.
 local HopToggleSet
-local RejoinToggleSet
 
 local function topBtn(txt, xoff, col)
     local b = Instance.new("TextButton")
@@ -673,23 +664,19 @@ local function topBtn(txt, xoff, col)
 end
 local MinBtn = topBtn("—", -72, Theme.Sub)
 local CloseBtn = topBtn("✕", -38, Theme.Bad)
--- Quick-Off Auto Hop: kiri tombol minimize. Kelihatan saat ada jalur hop aktif
--- (autoHop ATAU autoRejoin), supaya tombol panik selalu ada saat server bisa pindah.
+-- Quick-Off Auto Hop: kiri tombol minimize. Kelihatan saat Auto Hop ON,
+-- supaya tombol panik selalu ada saat server bisa pindah otomatis.
 local HopOffBtn = topBtn("⏻", -106, Theme.Bad)
 local function updateHopOffVisible()
-    HopOffBtn.Visible = State.autoHop or State.autoRejoin
+    HopOffBtn.Visible = State.autoHop
 end
 updateHopOffVisible()
 HopOffBtn.MouseButton1Click:Connect(function()
-    -- Stop SEMUA jalur hop: autoHop, autoRejoin, dan request hop manual.
-    -- Quick-Off = tombol panik, sekali klik semua aktivitas hop berhenti.
+    -- Quick-Off = tombol panik, sekali klik Auto Hop berhenti.
     State.autoHop = false
-    State.autoRejoin = false
-    _G.LowHubHop = false
     saveConfig()
     HopOffBtn.Visible = false
     if HopToggleSet then HopToggleSet(false, false) end
-    if RejoinToggleSet then RejoinToggleSet(false, false) end
 end)
 
 -- ===== Tab bar (horizontal pills) =====
@@ -1034,7 +1021,6 @@ end
 addTab("Info",    "Info")
 addTab("Wild",    "Wild Pets")
 addTab("Finder",  "Pet Finder")
-addTab("Global",  "Global")
 addTab("Webhook", "Webhook")
 
 -- ----- Info tab -----
@@ -1112,50 +1098,25 @@ local FinderPanel, updateFinderPanel
 do
     local page = Pages.Finder
     addMultiDropdown(page, "Finder Pet Name",
-        "Cari wild pet dengan nama ini.",
+        "Pet yang dicari. Panel nampilin server yang ada pet ini + tombol Join.",
         State.selectedFind, State.orderFind, getAllPetNames)
-    addSlider(page, "Pet Finder Interval",
-        "Delay loop (detik). Kecil = cepat, besar = ringan FPS.",
-        0.05, 3, State.finderInterval, function(v) State.finderInterval = v saveConfig() end)
+    addSlider(page, "Query Interval",
+        "Jeda antar query ke API (detik). Besar = ringan ke server API.",
+        3, 30, State.finderInterval, function(v) State.finderInterval = v saveConfig() end)
     addToggle(page, "Pet Finder",
-        "Tampilkan panel lokasi pet terpilih.", State.petFinder,
+        "Tampilkan panel server yang ada pet terpilih.", State.petFinder,
         function(on)
             State.petFinder = on
             saveConfig()
             if FinderPanel then FinderPanel.Visible = on end
         end)
-    RejoinToggleSet = addToggle(page, "Auto Join Server",
-        "Kalau pet tidak ada di server ini, pindah server otomatis.", State.autoRejoin,
-        function(on) State.autoRejoin = on saveConfig() updateHopOffVisible() end)
     HopToggleSet = addToggle(page, "Auto Hop Server",
-        "Hop server cari pet di Finder. Ketemu = stop dan diam (toggle tetap ON), hilang = hop lagi.",
+        "Auto teleport ke server yang API bilang ada pet. Ketemu di server ini = diam.",
         State.autoHop, function(on)
             State.autoHop = on
             saveConfig()
             updateHopOffVisible()
         end)
-    addSlider(page, "Hop Interval",
-        "Jeda antar hop (detik). Besar = aman dari rate-limit.",
-        3, 30, State.hopInterval, function(v) State.hopInterval = v saveConfig() end)
-    addSlider(page, "Scan Wait",
-        "Delay setelah join sebelum scan (detik), biar map ke-load.",
-        1, 15, State.scanWait, function(v) State.scanWait = v saveConfig() end)
-    addToggle(page, "Skip Full Server",
-        "Lewati server penuh saat hop.", State.skipFull,
-        function(on) State.skipFull = on saveConfig() end)
-    local hopBtn = Instance.new("TextButton")
-    hopBtn.Size = UDim2.new(1, -4, 0, 36)
-    hopBtn.BackgroundColor3 = Theme.Accent2
-    hopBtn.Text = "Hop Server"
-    hopBtn.Font = Enum.Font.GothamBold
-    hopBtn.TextSize = 13
-    hopBtn.TextColor3 = Theme.Text
-    hopBtn.AutoButtonColor = true
-    hopBtn.Parent = page
-    corner(hopBtn, 8)
-    hopBtn.MouseButton1Click:Connect(function()
-        _G.LowHubHop = true
-    end)
 end
 
 -- ----- Webhook tab -----
@@ -1284,165 +1245,6 @@ do
     end)
 end
 
--- ----- Global tab (cari pet di server lain via API agregat) -----
-local updateGlobalPanel
-do
-    local page = Pages.Global
-
-    addTextbox(page, "API URL",
-        "Endpoint API pet global. Filter otomatis ke pet yang dipilih di Pet Finder.",
-        "http://host:port/api/pets", State.globalUrl,
-        function(t) State.globalUrl = (t or ""):gsub("%s+", "") saveConfig() end)
-
-    addToggle(page, "Global Finder",
-        "Query API berkala, tampilkan pet di server lain + tombol Join.", State.globalEnabled,
-        function(on) State.globalEnabled = on saveConfig() end)
-
-    addSlider(page, "Query Interval",
-        "Jeda antar query API (detik). Besar = ringan ke server API.",
-        3, 30, State.globalInterval, function(v) State.globalInterval = v saveConfig() end)
-
-    -- status + tombol refresh manual
-    local statusRow = rowBase(page, 44)
-    local status = Instance.new("TextLabel")
-    status.Size = UDim2.new(1, -110, 1, 0)
-    status.Position = UDim2.fromOffset(12, 0)
-    status.BackgroundTransparency = 1
-    status.Font = Enum.Font.Gotham
-    status.TextSize = 12
-    status.TextColor3 = Theme.Sub
-    status.TextXAlignment = Enum.TextXAlignment.Left
-    status.Text = "Idle."
-    status.Parent = statusRow
-    local refreshBtn = Instance.new("TextButton")
-    refreshBtn.Size = UDim2.fromOffset(90, 28)
-    refreshBtn.Position = UDim2.new(1, -100, 0.5, -14)
-    refreshBtn.BackgroundColor3 = Theme.Accent2
-    refreshBtn.Text = "Refresh"
-    refreshBtn.Font = Enum.Font.GothamBold
-    refreshBtn.TextSize = 12
-    refreshBtn.TextColor3 = Theme.Text
-    refreshBtn.AutoButtonColor = true
-    refreshBtn.Parent = statusRow
-    corner(refreshBtn, 6)
-
-    -- host daftar hasil (rows dibuat ulang tiap refresh)
-    local listHost = Instance.new("Frame")
-    listHost.Size = UDim2.new(1, -4, 0, 0)
-    listHost.AutomaticSize = Enum.AutomaticSize.Y
-    listHost.BackgroundTransparency = 1
-    listHost.Parent = page
-    local ll = Instance.new("UIListLayout")
-    ll.Padding = UDim.new(0, 6)
-    ll.SortOrder = Enum.SortOrder.LayoutOrder
-    ll.Parent = listHost
-
-    local function fmtTime(sec)
-        sec = math.max(0, math.floor(sec))
-        return ("%d:%02d"):format(math.floor(sec / 60), sec % 60)
-    end
-
-    local function clearRows()
-        for _, c in ipairs(listHost:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
-        end
-    end
-
-    local function makeMsgRow(text)
-        clearRows()
-        local row = rowBase(listHost, 40)
-        row.BackgroundColor3 = Theme.Panel
-        local t = Instance.new("TextLabel")
-        t.Size = UDim2.new(1, -16, 1, 0)
-        t.Position = UDim2.fromOffset(12, 0)
-        t.BackgroundTransparency = 1
-        t.Font = Enum.Font.Gotham
-        t.TextSize = 12
-        t.TextColor3 = Theme.Sub
-        t.TextXAlignment = Enum.TextXAlignment.Left
-        t.Text = text
-        t.Parent = row
-    end
-
-    -- dipakai loop + tombol refresh. fetch di sini, render baris hasil.
-    function updateGlobalPanel(isManual)
-        status.Text = "Querying..."
-        local list, err = fetchGlobalPets()
-        if not list then
-            status.Text = "Error: " .. tostring(err)
-            makeMsgRow("Gagal ambil data. Cek API URL.")
-            return
-        end
-        if #list == 0 then
-            status.Text = "0 pet ketemu."
-            makeMsgRow("Belum ada pet (cocok pilihan) di server mana pun.")
-            return
-        end
-        status.Text = #list .. " pet ketemu."
-        clearRows()
-        local shown = math.min(#list, 40)  -- batasi 40 baris biar UI ringan
-        for i = 1, shown do
-            local p = list[i]
-            local row = rowBase(listHost, 46)
-            row.BackgroundColor3 = Theme.Panel
-            -- nama + rarity
-            local nm = Instance.new("TextLabel")
-            nm.Size = UDim2.new(1, -180, 0, 18)
-            nm.Position = UDim2.fromOffset(12, 6)
-            nm.BackgroundTransparency = 1
-            nm.Font = Enum.Font.GothamBold
-            nm.TextSize = 13
-            nm.TextColor3 = Theme.Text
-            nm.TextXAlignment = Enum.TextXAlignment.Left
-            nm.Text = p.name .. (p.rarity and ("  •  " .. p.rarity) or "")
-            nm.Parent = row
-            -- detail: players + sisa waktu + source
-            local meta = Instance.new("TextLabel")
-            meta.Size = UDim2.new(1, -180, 0, 14)
-            meta.Position = UDim2.fromOffset(12, 26)
-            meta.BackgroundTransparency = 1
-            meta.Font = Enum.Font.Gotham
-            meta.TextSize = 11
-            meta.TextColor3 = Theme.Sub
-            meta.TextXAlignment = Enum.TextXAlignment.Left
-            meta.Text = ("%d plr  •  %s left  •  %s"):format(p.players, fmtTime(p.remaining), p.source)
-            meta.Parent = row
-            -- tombol Join
-            local join = Instance.new("TextButton")
-            join.Size = UDim2.fromOffset(72, 30)
-            join.Position = UDim2.new(1, -84, 0.5, -15)
-            join.BackgroundColor3 = Theme.Accent2
-            join.Text = "Join"
-            join.Font = Enum.Font.GothamBold
-            join.TextSize = 12
-            join.TextColor3 = Theme.Text
-            join.AutoButtonColor = true
-            join.Parent = row
-            corner(join, 6)
-            local pid, jid = p.placeId, p.jobId
-            join.MouseButton1Click:Connect(function()
-                safeCall(function()
-                    join.Text = "..."
-                    local ok = pcall(function()
-                        TeleportService:TeleportToPlaceInstance(pid, jid, LocalPlayer)
-                    end)
-                    if not ok then
-                        join.Text = "Fail"
-                        task.delay(1.5, function() join.Text = "Join" end)
-                    end
-                end)
-            end)
-        end
-        if #list > shown then
-            makeMsgRow(("... +%d lagi (tampil %d teratas)"):format(#list - shown, shown))
-        end
-    end
-
-    refreshBtn.MouseButton1Click:Connect(function()
-        safeCall(updateGlobalPanel, true)
-    end)
-end
-
 selectTab("Info")
 
 
@@ -1509,12 +1311,12 @@ end)
 MinBtn.MouseButton1Click:Connect(function() setMinimized(true) end)
 CloseBtn.MouseButton1Click:Connect(function() Gui:Destroy() end)
 
--- ===== Floating Finder Panel =====
+-- ===== Floating Finder Panel (API-driven: server yang ada pet + tombol Join) =====
 do
     FinderPanel = Instance.new("Frame")
     FinderPanel.Name = "FinderPanel"
-    FinderPanel.Size = UDim2.fromOffset(260, 120)
-    FinderPanel.Position = UDim2.new(0, 20, 0.5, -60)
+    FinderPanel.Size = UDim2.fromOffset(300, 280)
+    FinderPanel.Position = UDim2.new(0, 20, 0.5, -140)
     FinderPanel.BackgroundColor3 = Theme.Bg
     FinderPanel.BorderSizePixel = 0
     FinderPanel.Visible = State.petFinder
@@ -1552,92 +1354,124 @@ do
     body.Parent = FinderPanel
     local bl = Instance.new("UIListLayout")
     bl.Padding = UDim.new(0, 4)
+    bl.SortOrder = Enum.SortOrder.LayoutOrder
     bl.Parent = body
 
-    function updateFinderPanel()
+    local function fmtTime(sec)
+        sec = math.max(0, math.floor(sec))
+        return ("%d:%02d"):format(math.floor(sec / 60), sec % 60)
+    end
+
+    local function clearRows()
         for _, c in ipairs(body:GetChildren()) do
             if c:IsA("Frame") then c:Destroy() end
         end
-        local present = {}
-        for _, p in ipairs(scanWildPets()) do
-            if State.selectedFind[p.name] then
-                present[p.name] = (present[p.name] or 0) + 1
-            end
+    end
+
+    local function msgRow(text)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -4, 0, 30)
+        row.BackgroundTransparency = 1
+        row.Parent = body
+        local nm = Instance.new("TextLabel")
+        nm.Size = UDim2.fromScale(1, 1)
+        nm.BackgroundTransparency = 1
+        nm.Font = Enum.Font.Gotham
+        nm.TextSize = 12
+        nm.TextColor3 = Theme.Sub
+        nm.TextWrapped = true
+        nm.Text = text
+        nm.Parent = row
+    end
+
+    -- list = hasil fetchApiPets(): array {name,rarity,jobId,placeId,remaining,players,source}
+    -- nil  = belum/ gagal fetch. {} = sukses tapi kosong.
+    function updateFinderPanel(list)
+        clearRows()
+        if next(State.selectedFind) == nil then
+            msgRow("Pilih pet di tab Pet Finder dulu.")
+            return
         end
-        local any = false
-        for name in pairs(State.selectedFind) do
-            any = true
+        if list == nil then
+            msgRow("Menghubungkan ke API...")
+            return
+        end
+        if #list == 0 then
+            msgRow("Belum ada pet ready di server mana pun.")
+            return
+        end
+        local myJob = tostring(game.JobId)
+        local shown = math.min(#list, 40)  -- batasi biar UI ringan
+        for i = 1, shown do
+            local p = list[i]
+            local here = (p.jobId == myJob)
             local row = Instance.new("Frame")
-            row.Size = UDim2.new(1, -4, 0, 28)
+            row.Size = UDim2.new(1, -4, 0, 46)
             row.BackgroundColor3 = Theme.Panel
             row.BorderSizePixel = 0
+            row.LayoutOrder = i
             row.Parent = body
             corner(row, 6)
             local nm = Instance.new("TextLabel")
-            nm.Size = UDim2.new(1, -70, 1, 0)
-            nm.Position = UDim2.fromOffset(8, 0)
+            nm.Size = UDim2.new(1, -88, 0, 18)
+            nm.Position = UDim2.fromOffset(10, 6)
             nm.BackgroundTransparency = 1
-            nm.Font = Enum.Font.GothamMedium
-            nm.TextSize = 12
+            nm.Font = Enum.Font.GothamBold
+            nm.TextSize = 13
             nm.TextColor3 = Theme.Text
             nm.TextXAlignment = Enum.TextXAlignment.Left
-            nm.Text = name
+            nm.Text = p.name .. (p.rarity and ("  •  " .. p.rarity) or "")
             nm.Parent = row
-            local cnt = present[name] or 0
-            local st = Instance.new("TextLabel")
-            st.Size = UDim2.new(0, 60, 1, 0)
-            st.Position = UDim2.new(1, -64, 0, 0)
-            st.BackgroundTransparency = 1
-            st.Font = Enum.Font.GothamBold
-            st.TextSize = 12
-            st.TextColor3 = cnt > 0 and Theme.Good or Theme.Bad
-            st.TextXAlignment = Enum.TextXAlignment.Right
-            st.Text = cnt > 0 and ("x" .. cnt) or "None"
-            st.Parent = row
+            local meta = Instance.new("TextLabel")
+            meta.Size = UDim2.new(1, -88, 0, 14)
+            meta.Position = UDim2.fromOffset(10, 26)
+            meta.BackgroundTransparency = 1
+            meta.Font = Enum.Font.Gotham
+            meta.TextSize = 11
+            meta.TextColor3 = Theme.Sub
+            meta.TextXAlignment = Enum.TextXAlignment.Left
+            meta.Text = ("%d plr  •  %s left  •  %s"):format(p.players, fmtTime(p.remaining), p.source)
+            meta.Parent = row
+            local join = Instance.new("TextButton")
+            join.Size = UDim2.fromOffset(64, 30)
+            join.Position = UDim2.new(1, -74, 0.5, -15)
+            join.BackgroundColor3 = here and Theme.Off or Theme.Accent2
+            join.Text = here and "Here" or "Join"
+            join.Font = Enum.Font.GothamBold
+            join.TextSize = 12
+            join.TextColor3 = Theme.Text
+            join.AutoButtonColor = not here
+            join.Active = not here
+            join.Parent = row
+            corner(join, 6)
+            if not here then
+                local pid, jid = p.placeId, p.jobId
+                join.MouseButton1Click:Connect(function()
+                    safeCall(function()
+                        join.Text = "..."
+                        local ok = pcall(function()
+                            TeleportService:TeleportToPlaceInstance(pid, jid, LocalPlayer)
+                        end)
+                        if not ok then
+                            join.Text = "Fail"
+                            task.delay(1.5, function() join.Text = "Join" end)
+                        end
+                    end)
+                end)
+            end
         end
-        if not any then
-            local row = Instance.new("Frame")
-            row.Size = UDim2.new(1, -4, 0, 28)
-            row.BackgroundTransparency = 1
-            row.Parent = body
-            local nm = Instance.new("TextLabel")
-            nm.Size = UDim2.fromScale(1, 1)
-            nm.BackgroundTransparency = 1
-            nm.Font = Enum.Font.Gotham
-            nm.TextSize = 12
-            nm.TextColor3 = Theme.Sub
-            nm.Text = "Pilih pet di tab Pet Finder"
-            nm.Parent = row
+        if #list > shown then
+            msgRow(("... +%d server lagi"):format(#list - shown))
         end
     end
 end
 
--- ===== Server Hop =====
-local function hopServer()
-    local ok = pcall(function()
-        local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100")
-            :format(game.PlaceId)
-        local req = (syn and syn.request) or (http and http.request) or request or http_request
-        if not req then
-            TeleportService:Teleport(game.PlaceId, LocalPlayer)
-            return
-        end
-        local res = req({Url = url, Method = "GET"})
-        local data = HttpService:JSONDecode(res.Body)
-        local mine = game.JobId
-        for _, s in ipairs(data.data or {}) do
-            local hasSlot = s.playing < s.maxPlayers
-            local okServer = State.skipFull and hasSlot or (s.playing <= s.maxPlayers)
-            if s.id ~= mine and okServer then
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, LocalPlayer)
-                return
-            end
-        end
-        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+-- ===== Targeted teleport =====
+-- Hop bukan random lagi: langsung ke jobId yang API bilang ada pet.
+local function joinJob(placeId, jobId)
+    return pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
     end)
-    if not ok then
-        pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-    end
 end
 
 -- ===== Loops =====
@@ -1721,33 +1555,32 @@ task.spawn(function()
     end
 end)
 
--- Finder panel + auto rejoin + auto hop
--- Delay startup: tunggu scanWait detik dulu tiap script baru load (abis join/hop)
--- biar map & pet sempat ke-render sebelum discan -- mencegah false "not found".
+-- Finder loop (API-driven): query API -> render panel -> webhook -> targeted hop.
+-- Delay startup: tunggu SCAN_WAIT detik tiap script baru load (abis join/hop) biar
+-- map & pet sempat ke-render sebelum discan lokal -- mencegah false "not found".
 local scriptLoadedAt = os.time()
 local webhookSent = false  -- flag anti-spam: kirim sekali per event ketemu (reset saat pet hilang/hop)
 
 task.spawn(function()
     while Gui.Parent do
         pcall(function()
-            if State.petFinder and updateFinderPanel then
-                updateFinderPanel()
-            end
-
-            -- Selama belum lewat scanWait sejak script ini load, jangan ambil
-            -- keputusan hop/scan dulu -- map mungkin belum sepenuhnya ke-load.
-            local sinceLoad = os.time() - scriptLoadedAt
-            if sinceLoad < (State.scanWait or 4) then
-                return
-            end
-
-            local wantHop = _G.LowHubHop == true
-            local found = isTargetFound()
             local hasSelection = next(State.selectedFind) ~= nil
 
-            -- Webhook: kirim sekali saat pet target ketemu. Reset kalau pet hilang
-            -- supaya kemunculan berikutnya kirim lagi. Tiap hop = reload = flag reset.
-            if State.webhookEnabled and found then
+            -- Query API cuma kalau perlu: panel kebuka ATAU auto hop nyala.
+            -- list bisa nil (gagal/belum fetch), {} (kosong), atau array hasil.
+            local list = nil
+            if hasSelection and (State.petFinder or State.autoHop) then
+                list = fetchApiPets()
+            end
+
+            if State.petFinder and updateFinderPanel then
+                updateFinderPanel(list)
+            end
+
+            -- Webhook: kirim sekali saat pet target ada di SERVER INI (scan lokal).
+            -- Reset kalau pet hilang supaya kemunculan berikutnya kirim lagi.
+            local foundHere = isTargetFound()
+            if State.webhookEnabled and foundHere then
                 if not webhookSent then
                     local names = getFoundNames()
                     if #names > 0 and sendWebhook(names, false) then
@@ -1758,44 +1591,30 @@ task.spawn(function()
                 webhookSent = false
             end
 
-            -- Auto Join Server: pet ga ada -> hop sekali jalan
-            if State.autoRejoin and hasSelection and not found then
-                wantHop = true
-            end
+            -- Tunggu map ke-load dulu setelah join/hop sebelum ambil keputusan hop.
+            local sinceLoad = os.time() - scriptLoadedAt
+            if sinceLoad < SCAN_WAIT then return end
 
-            -- Auto Hop Server: keep hopping (hormati hopInterval) sampai ketemu.
-            -- Ketemu = berhenti diam, toggle tetap ON.
-            -- lastHopAt disimpan ke State (persist ke file) karena os.clock()/os.time()
-            -- proses lama hilang total tiap hop (= teleport = script reload).
-            if State.autoHop and hasSelection and not found then
-                local now = os.time()
-                if (now - (State.lastHopAt or 0)) >= (State.hopInterval or 8) then
-                    wantHop = true
+            -- Auto Hop targeted: kalau pet target BELUM ada di server ini, teleport
+            -- langsung ke jobId server lain yang API bilang ada pet (bukan random).
+            -- Ketemu di server ini = diam (toggle tetap ON).
+            if State.autoHop and hasSelection and not foundHere and list then
+                local myJob = tostring(game.JobId)
+                local target
+                for _, p in ipairs(list) do
+                    if p.jobId ~= myJob then target = p break end
+                end
+                if target then
+                    local now = os.time()
+                    if (now - (State.lastHopAt or 0)) >= HOP_COOLDOWN then
+                        State.lastHopAt = now
+                        saveConfig()
+                        joinJob(target.placeId, target.jobId)
+                    end
                 end
             end
-
-            if wantHop then
-                _G.LowHubHop = false
-                State.lastHopAt = os.time()
-                saveConfig()
-                hopServer()
-            end
         end)
-        task.wait(State.finderInterval)
-    end
-end)
-
--- Global Finder loop: query API berkala (terpisah dari loop Finder lokal biar
--- intervalnya sendiri & gak ganggu scan/hop). Cuma jalan saat tab/toggle aktif.
-task.spawn(function()
-    while Gui.Parent do
-        pcall(function()
-            if State.globalEnabled and updateGlobalPanel then
-                updateGlobalPanel(false)
-            end
-        end)
-        -- minimal 3 detik biar gak spam server API walau slider sempat lebih kecil
-        task.wait(math.max(3, State.globalInterval or 5))
+        task.wait(math.max(3, State.finderInterval or 5))
     end
 end)
 
