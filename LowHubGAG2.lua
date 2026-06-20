@@ -1813,4 +1813,4 @@ do
     end)
 end
 
-print("[Low Hub] GAG2 Wild Pet Finder loaded. (FIX build2)")
+print("[Low Hub] GAG2 Wild Pet Finder loaded. (FIX build22)")
