@@ -51,8 +51,8 @@ local Theme = {
 
 -- ===== Hidden config (tidak ditampilkan di UI) =====
 local API_URL      = "http://nano-1.nura.host:5064/api/pets"
-local SCAN_WAIT    = 4   -- delay (detik) setelah join sebelum ambil keputusan hop, biar map ke-load
-local HOP_COOLDOWN = 8   -- jeda minimal antar teleport (detik), anti spam rate-limit
+local SCAN_WAIT    = 2   -- delay (detik) setelah join sebelum ambil keputusan hop, biar map ke-load
+local HOP_COOLDOWN = 4   -- jeda minimal antar teleport (detik), anti spam rate-limit
 
 -- ===== Shared State =====
 local State = {
@@ -256,31 +256,55 @@ local function getRoot()
     return char:FindFirstChild("HumanoidRootPart") or char:FindFirstChildWhichIsA("BasePart")
 end
 
--- Tween character ke pet. Gerak per-langkah (~28 stud) biar anti-cheat game
--- gak nge-snapback (teleport balik) karena lompatan jarak terlalu jauh.
+-- Tween character ke pet. Gerak per-langkah biar anti-cheat game gak nge-snapback
+-- karena lompatan jarak terlalu jauh. Target boleh Vector3 ATAU Instance (Model/
+-- BasePart) -- kalau Instance, posisi dibaca ulang LIVE tiap step. Penting: wild
+-- pet jalan-jalan, kalau pakai posisi beku tween jadi kejar-kejaran / bolak-balik.
 local tweenActive
-local STEP = 28
-local function tweenToPet(petPos)
+local STEP = 55          -- langkah lebih besar (dulu 28)
+local MOVE_SPEED = 190   -- stud/s, jauh lebih cepat (dulu ~90)
+
+local function resolveTargetPos(target)
+    if typeof(target) == "Vector3" then return target end
+    if typeof(target) == "Instance" then
+        if target:IsA("Model") then
+            local ok, cf = pcall(function() return target:GetPivot() end)
+            if ok and cf then return cf.Position end
+            local part = target:FindFirstChildWhichIsA("BasePart", true)
+            if part then return part.Position end
+        elseif target:IsA("BasePart") then
+            return target.Position
+        end
+    end
+    return nil
+end
+
+local function tweenToPet(target)
     local root = getRoot()
     if not root then return false end
-    local target = petPos + Vector3.new(0, 3, 0)
     if tweenActive then pcall(function() tweenActive:Cancel() end) end
-    -- loop langkah kecil sampai dekat
-    for _ = 1, 12 do
+    -- loop langkah kecil sampai dekat; baca ulang posisi target tiap iterasi
+    for _ = 1, 24 do
         root = getRoot()
         if not root then return false end
-        local toGo = target - root.Position
+        local tp = resolveTargetPos(target)
+        if not tp then return false end
+        local goal = tp + Vector3.new(0, 3, 0)
+        local toGo = goal - root.Position
         local dist = toGo.Magnitude
         if dist <= 4 then break end
+        -- nol-kan momentum biar karakter gak nyeret / kelempar / jatuh
+        pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
         local stepLen = math.min(dist, STEP)
         local nextPos = root.Position + toGo.Unit * stepLen
-        local dur = stepLen / 90  -- ~90 stud/s, mulus tapi cepat
+        local dur = stepLen / MOVE_SPEED
         tweenActive = TweenService:Create(root,
             TweenInfo.new(dur, Enum.EasingStyle.Linear),
             { CFrame = CFrame.new(nextPos) })
         tweenActive:Play()
         tweenActive.Completed:Wait()
     end
+    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
     return true
 end
 
@@ -291,7 +315,7 @@ local function shovelHit(tool, targetChar)
     local tp = targetChar:FindFirstChild("HumanoidRootPart")
         or targetChar:FindFirstChildWhichIsA("BasePart")
     if not tp then return end
-    tweenToPet(tp.Position)
+    tweenToPet(tp)
     for _ = 1, 3 do
         pcall(function() tool:Activate() end)
         task.wait(0.05)
@@ -1497,7 +1521,7 @@ task.spawn(function()
                         end
                     end
                     if best then
-                        tweenToPet(best.pos)
+                        tweenToPet(best.model)
                         tryPrompt(best.model)
                         task.wait(0.2)
                     end
@@ -1536,7 +1560,7 @@ task.spawn(function()
                         end
                     end
                     if best then
-                        tweenToPet(best.pos)
+                        tweenToPet(best.model)
                         -- pukul tiap player lain dalam radius 18 stud dari pet
                         for _, pl in ipairs(Players:GetPlayers()) do
                             if pl ~= LocalPlayer and pl.Character then
