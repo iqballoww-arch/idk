@@ -539,6 +539,7 @@ Sub.Parent = Top
 -- Forward-declare: dipakai topbar quick-off (di bawah) DAN tab Pet Finder (nanti),
 -- harus satu local yang sama supaya keduanya saling sinkron.
 local HopToggleSet
+local RejoinToggleSet
 
 local function topBtn(txt, xoff, col)
     local b = Instance.new("TextButton")
@@ -557,14 +558,23 @@ local function topBtn(txt, xoff, col)
 end
 local MinBtn = topBtn("—", -72, Theme.Sub)
 local CloseBtn = topBtn("✕", -38, Theme.Bad)
--- Quick-Off Auto Hop: kiri tombol minimize. Cuma kelihatan saat State.autoHop ON.
+-- Quick-Off Auto Hop: kiri tombol minimize. Kelihatan saat ada jalur hop aktif
+-- (autoHop ATAU autoRejoin), supaya tombol panik selalu ada saat server bisa pindah.
 local HopOffBtn = topBtn("⏻", -106, Theme.Bad)
-HopOffBtn.Visible = State.autoHop
+local function updateHopOffVisible()
+    HopOffBtn.Visible = State.autoHop or State.autoRejoin
+end
+updateHopOffVisible()
 HopOffBtn.MouseButton1Click:Connect(function()
+    -- Stop SEMUA jalur hop: autoHop, autoRejoin, dan request hop manual.
+    -- Quick-Off = tombol panik, sekali klik semua aktivitas hop berhenti.
     State.autoHop = false
+    State.autoRejoin = false
+    _G.LowHubHop = false
     saveConfig()
     HopOffBtn.Visible = false
     if HopToggleSet then HopToggleSet(false, false) end
+    if RejoinToggleSet then RejoinToggleSet(false, false) end
 end)
 
 -- ===== Tab bar (horizontal pills) =====
@@ -994,15 +1004,15 @@ do
             State.petFinder = on
             if FinderPanel then FinderPanel.Visible = on end
         end)
-    addToggle(page, "Auto Join Server",
-        "Kalau pet tidak ada di server ini, pindah server otomatis.", false,
-        function(on) State.autoRejoin = on end)
+    RejoinToggleSet = addToggle(page, "Auto Join Server",
+        "Kalau pet tidak ada di server ini, pindah server otomatis.", State.autoRejoin,
+        function(on) State.autoRejoin = on saveConfig() updateHopOffVisible() end)
     HopToggleSet = addToggle(page, "Auto Hop Server",
         "Hop server cari pet di Finder. Ketemu = stop dan diam (toggle tetap ON), hilang = hop lagi.",
         State.autoHop, function(on)
             State.autoHop = on
             saveConfig()
-            HopOffBtn.Visible = on
+            updateHopOffVisible()
         end)
     addSlider(page, "Hop Interval",
         "Jeda antar hop (detik). Besar = aman dari rate-limit.",
