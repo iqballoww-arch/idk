@@ -70,6 +70,9 @@ local State = {
     scanWait     = 4,
     skipFull     = true,
     lastHopAt    = 0,   -- os.time() epoch; persist lintas server biar hopInterval akurat
+    -- Webhook
+    webhookUrl     = "",
+    webhookEnabled = false,
 }
 
 -- ===== Config Persistence (bertahan lintas server / teleport) =====
@@ -86,6 +89,7 @@ local SAVED_KEYS = {
     "hopInterval", "scanWait", "skipFull",
     "finderInterval", "tameInterval", "maxPrice",
     "lastHopAt",
+    "webhookUrl", "webhookEnabled",
 }
 
 local function saveConfig()
@@ -232,6 +236,18 @@ local function isTargetFound()
         if State.selectedFind[p.name] then return true end
     end
     return false
+end
+
+-- Daftar nama pet target yang ada di server ini sekarang (unik, untuk webhook).
+local function getFoundNames()
+    local seen, out = {}, {}
+    for _, p in ipairs(scanWildPets()) do
+        if State.selectedFind[p.name] and not seen[p.name] then
+            seen[p.name] = true
+            out[#out + 1] = p.name
+        end
+    end
+    return out
 end
 
 -- ===== Character / movement =====
@@ -416,6 +432,58 @@ local function httpGet(url)
     local ok, body = pcall(function() return game:HttpGet(url) end)
     if ok and type(body) == "string" and #body > 0 then return body end
     return nil
+end
+
+-- POST JSON ke URL (dipakai Discord webhook). Coba semua varian request executor.
+local function httpPost(url, body)
+    local headers = { ["Content-Type"] = "application/json" }
+    local fns = {
+        function() return request and request({ Url = url, Method = "POST", Headers = headers, Body = body }) end,
+        function() return syn and syn.request and syn.request({ Url = url, Method = "POST", Headers = headers, Body = body }) end,
+        function() return http and http.request and http.request({ Url = url, Method = "POST", Headers = headers, Body = body }) end,
+        function() return http_request and http_request({ Url = url, Method = "POST", Headers = headers, Body = body }) end,
+        function()
+            local r = (fluxus and fluxus.request) or fluxusrequest
+            return r and r({ Url = url, Method = "POST", Headers = headers, Body = body })
+        end,
+    }
+    for _, f in ipairs(fns) do
+        local ok, res = pcall(f)
+        if ok and type(res) == "table" then
+            return res
+        end
+    end
+    return nil
+end
+
+-- Kirim notifikasi pet ketemu ke Discord webhook (Place ID + Job ID + daftar pet).
+local function sendWebhook(petNames, isTest)
+    local url = State.webhookUrl
+    if not url or url == "" then return false, "URL kosong" end
+    local placeId = tostring(game.PlaceId)
+    local jobId   = tostring(game.JobId)
+    local list = (petNames and #petNames > 0) and table.concat(petNames, ", ") or "—"
+    local joinScript = ('game:GetService("TeleportService"):TeleportToPlaceInstance(%s, "%s")')
+        :format(placeId, jobId)
+    local payload = {
+        username = "Low Hub Finder",
+        embeds = {{
+            title = isTest and "🔧 Test Webhook" or "🎯 Wild Pet Found!",
+            color = 9919999,
+            fields = {
+                { name = "Pets",     value = list, inline = false },
+                { name = "Place ID", value = "```" .. placeId .. "```", inline = true },
+                { name = "Job ID",   value = "```" .. jobId .. "```", inline = false },
+                { name = "Join Script", value = "```lua\n" .. joinScript .. "\n```", inline = false },
+            },
+            footer = { text = "Low Hub • GAG2 Finder" },
+        }},
+    }
+    local okEnc, body = pcall(function() return HttpService:JSONEncode(payload) end)
+    if not okEnc then return false, "encode gagal" end
+    local res = httpPost(url, body)
+    if res == nil then return false, "request gagal" end
+    return true
 end
 
 local function customAsset(path)
@@ -920,6 +988,7 @@ end
 addTab("Info",    "Info")
 addTab("Wild",    "Wild Pets")
 addTab("Finder",  "Pet Finder")
+addTab("Webhook", "Webhook")
 
 -- ----- Info tab -----
 do
@@ -1042,7 +1111,134 @@ do
     end)
 end
 
+-- ----- Webhook tab -----
+do
+    local page = Pages.Webhook
+
+    addTextbox(page, "Webhook URL",
+        "Discord webhook. Notif dikirim saat pet ketemu.",
+        "https://discord.com/api/webhooks/...", State.webhookUrl,
+        function(t) State.webhookUrl = (t or ""):gsub("%s+", "") saveConfig() end)
+
+    addToggle(page, "Auto Send on Found",
+        "Kirim webhook otomatis tiap pet target ketemu di server.", State.webhookEnabled,
+        function(on) State.webhookEnabled = on saveConfig() end)
+
+    -- Tombol test kirim webhook
+    local testBtn = Instance.new("TextButton")
+    testBtn.Size = UDim2.new(1, -4, 0, 36)
+    testBtn.BackgroundColor3 = Theme.Accent2
+    testBtn.Text = "Send Test Webhook"
+    testBtn.Font = Enum.Font.GothamBold
+    testBtn.TextSize = 13
+    testBtn.TextColor3 = Theme.Text
+    testBtn.AutoButtonColor = true
+    testBtn.Parent = page
+    corner(testBtn, 8)
+    testBtn.MouseButton1Click:Connect(function()
+        safeCall(function()
+            local original = testBtn.Text
+            testBtn.Text = "Sending..."
+            local ok, err = sendWebhook({ "Test Pet" }, true)
+            testBtn.Text = ok and "Sent ✓" or ("Failed: " .. tostring(err))
+            task.delay(2, function() testBtn.Text = original end)
+        end)
+    end)
+
+    -- Info server: Place ID + Job ID + tombol copy
+    local infoRow = rowBase(page, 86)
+    rowTitle(infoRow, "Current Server", "Place ID & Job ID server ini.")
+    local idLabel = Instance.new("TextLabel")
+    idLabel.Size = UDim2.new(1, -24, 0, 40)
+    idLabel.Position = UDim2.fromOffset(12, 40)
+    idLabel.BackgroundTransparency = 1
+    idLabel.Font = Enum.Font.Code
+    idLabel.TextSize = 11
+    idLabel.TextColor3 = Theme.Sub
+    idLabel.TextXAlignment = Enum.TextXAlignment.Left
+    idLabel.TextYAlignment = Enum.TextYAlignment.Top
+    idLabel.TextWrapped = true
+    idLabel.Text = ("Place: %s\nJob: %s"):format(tostring(game.PlaceId), tostring(game.JobId))
+    idLabel.Parent = infoRow
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Size = UDim2.fromOffset(96, 26)
+    copyBtn.Position = UDim2.new(1, -108, 0, 10)
+    copyBtn.BackgroundColor3 = Theme.Panel2
+    copyBtn.Text = "Copy Job ID"
+    copyBtn.Font = Enum.Font.GothamMedium
+    copyBtn.TextSize = 11
+    copyBtn.TextColor3 = Theme.Text
+    copyBtn.AutoButtonColor = false
+    copyBtn.Parent = infoRow
+    corner(copyBtn, 6)
+    stroke(copyBtn, Theme.Stroke, 1)
+    hoverFx(copyBtn, Theme.Panel2, Theme.Hover)
+    copyBtn.MouseButton1Click:Connect(function()
+        safeCall(function()
+            if typeof(setclipboard) == "function" then
+                setclipboard(tostring(game.JobId))
+                copyBtn.Text = "Copied ✓"
+            else
+                copyBtn.Text = "No clipboard"
+            end
+            task.delay(1.5, function() copyBtn.Text = "Copy Job ID" end)
+        end)
+    end)
+
+    -- Join with Job ID: input job id lalu teleport ke server itu
+    local joinRow = rowBase(page, 92)
+    rowTitle(joinRow, "Join with Job ID", "Tempel Job ID untuk masuk server tertentu.")
+    local jobBox = Instance.new("TextBox")
+    jobBox.Size = UDim2.new(1, -24, 0, 26)
+    jobBox.Position = UDim2.fromOffset(12, 40)
+    jobBox.BackgroundColor3 = Theme.Panel2
+    jobBox.Font = Enum.Font.Code
+    jobBox.TextSize = 11
+    jobBox.TextColor3 = Theme.Text
+    jobBox.PlaceholderText = "paste Job ID here..."
+    jobBox.Text = ""
+    jobBox.ClearTextOnFocus = false
+    jobBox.TextXAlignment = Enum.TextXAlignment.Left
+    jobBox.Parent = joinRow
+    corner(jobBox, 6)
+    stroke(jobBox, Theme.Stroke, 1)
+    local jp = Instance.new("UIPadding")
+    jp.PaddingLeft = UDim.new(0, 8)
+    jp.PaddingRight = UDim.new(0, 8)
+    jp.Parent = jobBox
+    local joinBtn = Instance.new("TextButton")
+    joinBtn.Size = UDim2.new(1, -24, 0, 26)
+    joinBtn.Position = UDim2.fromOffset(12, 72)
+    joinBtn.BackgroundColor3 = Theme.Accent2
+    joinBtn.Text = "Join Server"
+    joinBtn.Font = Enum.Font.GothamBold
+    joinBtn.TextSize = 12
+    joinBtn.TextColor3 = Theme.Text
+    joinBtn.AutoButtonColor = true
+    joinBtn.Parent = joinRow
+    corner(joinBtn, 6)
+    joinBtn.MouseButton1Click:Connect(function()
+        safeCall(function()
+            local jid = (jobBox.Text or ""):gsub("%s+", "")
+            if jid == "" then
+                joinBtn.Text = "Job ID kosong"
+                task.delay(1.5, function() joinBtn.Text = "Join Server" end)
+                return
+            end
+            joinBtn.Text = "Joining..."
+            local ok = pcall(function()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, jid, LocalPlayer)
+            end)
+            if not ok then
+                joinBtn.Text = "Join gagal"
+                task.delay(1.5, function() joinBtn.Text = "Join Server" end)
+            end
+        end)
+    end)
+end
+
 selectTab("Info")
+
 
 -- ===== Minimize ke floating icon (LowHubIcon) =====
 local IconBtn = Instance.new("TextButton")
@@ -1323,6 +1519,7 @@ end)
 -- Delay startup: tunggu scanWait detik dulu tiap script baru load (abis join/hop)
 -- biar map & pet sempat ke-render sebelum discan -- mencegah false "not found".
 local scriptLoadedAt = os.time()
+local webhookSent = false  -- flag anti-spam: kirim sekali per event ketemu (reset saat pet hilang/hop)
 
 task.spawn(function()
     while Gui.Parent do
@@ -1341,6 +1538,19 @@ task.spawn(function()
             local wantHop = _G.LowHubHop == true
             local found = isTargetFound()
             local hasSelection = next(State.selectedFind) ~= nil
+
+            -- Webhook: kirim sekali saat pet target ketemu. Reset kalau pet hilang
+            -- supaya kemunculan berikutnya kirim lagi. Tiap hop = reload = flag reset.
+            if State.webhookEnabled and found then
+                if not webhookSent then
+                    local names = getFoundNames()
+                    if #names > 0 and sendWebhook(names, false) then
+                        webhookSent = true
+                    end
+                end
+            else
+                webhookSent = false
+            end
 
             -- Auto Join Server: pet ga ada -> hop sekali jalan
             if State.autoRejoin and hasSelection and not found then
