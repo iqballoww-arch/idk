@@ -73,6 +73,10 @@ local State = {
     -- Webhook
     webhookUrl     = "",
     webhookEnabled = false,
+    -- Global Finder (query API agregat: pet di server lain tanpa kita di sana)
+    globalUrl      = "http://nano-1.nura.host:5064/api/pets",
+    globalEnabled  = false,
+    globalInterval = 5,
 }
 
 -- ===== Config Persistence (bertahan lintas server / teleport) =====
@@ -90,6 +94,7 @@ local SAVED_KEYS = {
     "finderInterval", "tameInterval", "maxPrice",
     "lastHopAt",
     "webhookUrl", "webhookEnabled",
+    "globalUrl", "globalEnabled", "globalInterval",
 }
 
 local function saveConfig()
@@ -484,6 +489,47 @@ local function sendWebhook(petNames, isTest)
     local res = httpPost(url, body)
     if res == nil then return false, "request gagal" end
     return true
+end
+
+-- Global Finder: query API agregat (huki/wishub) untuk tahu pet di server lain
+-- TANPA kita harus ada di server itu. Balikin list terurut sisa-waktu terbanyak.
+-- { {name, rarity, jobId, placeId, remaining, players, source}, ... }
+local function fetchGlobalPets()
+    local base = State.globalUrl
+    if not base or base == "" then return nil, "URL kosong" end
+    -- filter ke pet yang dipilih di Finder (kalau ada). API dukung name=A,B,C
+    local names = {}
+    for nm in pairs(State.selectedFind) do names[#names + 1] = nm end
+    local url = base
+    if #names > 0 then
+        local sep = base:find("?", 1, true) and "&" or "?"
+        url = base .. sep .. "name=" .. table.concat(names, ",")
+    end
+    local raw = httpGet(url)
+    if not raw then return nil, "request gagal" end
+    local okDec, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not okDec or type(data) ~= "table" then return nil, "decode gagal" end
+    local pets = data.pets
+    if type(pets) ~= "table" then return {}, nil end
+    local out = {}
+    for _, p in ipairs(pets) do
+        if type(p) == "table" and p.jobId and p.placeId then
+            local rem = tonumber(p.remainingSeconds) or 0
+            if rem > 0 then
+                out[#out + 1] = {
+                    name      = tostring(p.name or "?"),
+                    rarity    = p.rarity and tostring(p.rarity) or nil,
+                    jobId     = tostring(p.jobId),
+                    placeId   = p.placeId,
+                    remaining = rem,
+                    players   = tonumber(p.playersCount) or 0,
+                    source    = tostring(p.source or "?"),
+                }
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.remaining > b.remaining end)
+    return out, nil
 end
 
 local function customAsset(path)
@@ -988,6 +1034,7 @@ end
 addTab("Info",    "Info")
 addTab("Wild",    "Wild Pets")
 addTab("Finder",  "Pet Finder")
+addTab("Global",  "Global")
 addTab("Webhook", "Webhook")
 
 -- ----- Info tab -----
@@ -1234,6 +1281,165 @@ do
                 task.delay(1.5, function() joinBtn.Text = "Join Server" end)
             end
         end)
+    end)
+end
+
+-- ----- Global tab (cari pet di server lain via API agregat) -----
+local updateGlobalPanel
+do
+    local page = Pages.Global
+
+    addTextbox(page, "API URL",
+        "Endpoint API pet global. Filter otomatis ke pet yang dipilih di Pet Finder.",
+        "http://host:port/api/pets", State.globalUrl,
+        function(t) State.globalUrl = (t or ""):gsub("%s+", "") saveConfig() end)
+
+    addToggle(page, "Global Finder",
+        "Query API berkala, tampilkan pet di server lain + tombol Join.", State.globalEnabled,
+        function(on) State.globalEnabled = on saveConfig() end)
+
+    addSlider(page, "Query Interval",
+        "Jeda antar query API (detik). Besar = ringan ke server API.",
+        3, 30, State.globalInterval, function(v) State.globalInterval = v saveConfig() end)
+
+    -- status + tombol refresh manual
+    local statusRow = rowBase(page, 44)
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, -110, 1, 0)
+    status.Position = UDim2.fromOffset(12, 0)
+    status.BackgroundTransparency = 1
+    status.Font = Enum.Font.Gotham
+    status.TextSize = 12
+    status.TextColor3 = Theme.Sub
+    status.TextXAlignment = Enum.TextXAlignment.Left
+    status.Text = "Idle."
+    status.Parent = statusRow
+    local refreshBtn = Instance.new("TextButton")
+    refreshBtn.Size = UDim2.fromOffset(90, 28)
+    refreshBtn.Position = UDim2.new(1, -100, 0.5, -14)
+    refreshBtn.BackgroundColor3 = Theme.Accent2
+    refreshBtn.Text = "Refresh"
+    refreshBtn.Font = Enum.Font.GothamBold
+    refreshBtn.TextSize = 12
+    refreshBtn.TextColor3 = Theme.Text
+    refreshBtn.AutoButtonColor = true
+    refreshBtn.Parent = statusRow
+    corner(refreshBtn, 6)
+
+    -- host daftar hasil (rows dibuat ulang tiap refresh)
+    local listHost = Instance.new("Frame")
+    listHost.Size = UDim2.new(1, -4, 0, 0)
+    listHost.AutomaticSize = Enum.AutomaticSize.Y
+    listHost.BackgroundTransparency = 1
+    listHost.Parent = page
+    local ll = Instance.new("UIListLayout")
+    ll.Padding = UDim.new(0, 6)
+    ll.SortOrder = Enum.SortOrder.LayoutOrder
+    ll.Parent = listHost
+
+    local function fmtTime(sec)
+        sec = math.max(0, math.floor(sec))
+        return ("%d:%02d"):format(math.floor(sec / 60), sec % 60)
+    end
+
+    local function clearRows()
+        for _, c in ipairs(listHost:GetChildren()) do
+            if c:IsA("Frame") then c:Destroy() end
+        end
+    end
+
+    local function makeMsgRow(text)
+        clearRows()
+        local row = rowBase(listHost, 40)
+        row.BackgroundColor3 = Theme.Panel
+        local t = Instance.new("TextLabel")
+        t.Size = UDim2.new(1, -16, 1, 0)
+        t.Position = UDim2.fromOffset(12, 0)
+        t.BackgroundTransparency = 1
+        t.Font = Enum.Font.Gotham
+        t.TextSize = 12
+        t.TextColor3 = Theme.Sub
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.Text = text
+        t.Parent = row
+    end
+
+    -- dipakai loop + tombol refresh. fetch di sini, render baris hasil.
+    function updateGlobalPanel(isManual)
+        status.Text = "Querying..."
+        local list, err = fetchGlobalPets()
+        if not list then
+            status.Text = "Error: " .. tostring(err)
+            makeMsgRow("Gagal ambil data. Cek API URL.")
+            return
+        end
+        if #list == 0 then
+            status.Text = "0 pet ketemu."
+            makeMsgRow("Belum ada pet (cocok pilihan) di server mana pun.")
+            return
+        end
+        status.Text = #list .. " pet ketemu."
+        clearRows()
+        local shown = math.min(#list, 40)  -- batasi 40 baris biar UI ringan
+        for i = 1, shown do
+            local p = list[i]
+            local row = rowBase(listHost, 46)
+            row.BackgroundColor3 = Theme.Panel
+            -- nama + rarity
+            local nm = Instance.new("TextLabel")
+            nm.Size = UDim2.new(1, -180, 0, 18)
+            nm.Position = UDim2.fromOffset(12, 6)
+            nm.BackgroundTransparency = 1
+            nm.Font = Enum.Font.GothamBold
+            nm.TextSize = 13
+            nm.TextColor3 = Theme.Text
+            nm.TextXAlignment = Enum.TextXAlignment.Left
+            nm.Text = p.name .. (p.rarity and ("  •  " .. p.rarity) or "")
+            nm.Parent = row
+            -- detail: players + sisa waktu + source
+            local meta = Instance.new("TextLabel")
+            meta.Size = UDim2.new(1, -180, 0, 14)
+            meta.Position = UDim2.fromOffset(12, 26)
+            meta.BackgroundTransparency = 1
+            meta.Font = Enum.Font.Gotham
+            meta.TextSize = 11
+            meta.TextColor3 = Theme.Sub
+            meta.TextXAlignment = Enum.TextXAlignment.Left
+            meta.Text = ("%d plr  •  %s left  •  %s"):format(p.players, fmtTime(p.remaining), p.source)
+            meta.Parent = row
+            -- tombol Join
+            local join = Instance.new("TextButton")
+            join.Size = UDim2.fromOffset(72, 30)
+            join.Position = UDim2.new(1, -84, 0.5, -15)
+            join.BackgroundColor3 = Theme.Accent2
+            join.Text = "Join"
+            join.Font = Enum.Font.GothamBold
+            join.TextSize = 12
+            join.TextColor3 = Theme.Text
+            join.AutoButtonColor = true
+            join.Parent = row
+            corner(join, 6)
+            local pid, jid = p.placeId, p.jobId
+            join.MouseButton1Click:Connect(function()
+                safeCall(function()
+                    join.Text = "..."
+                    local ok = pcall(function()
+                        TeleportService:TeleportToPlaceInstance(pid, jid, LocalPlayer)
+                    end)
+                    if not ok then
+                        join.Text = "Fail"
+                        task.delay(1.5, function() join.Text = "Join" end)
+                    end
+                end)
+            end)
+        end
+        if #list > shown then
+            makeMsgRow(("... +%d lagi (tampil %d teratas)"):format(#list - shown, shown))
+        end
+    end
+
+    refreshBtn.MouseButton1Click:Connect(function()
+        safeCall(updateGlobalPanel, true)
     end)
 end
 
@@ -1576,6 +1782,20 @@ task.spawn(function()
             end
         end)
         task.wait(State.finderInterval)
+    end
+end)
+
+-- Global Finder loop: query API berkala (terpisah dari loop Finder lokal biar
+-- intervalnya sendiri & gak ganggu scan/hop). Cuma jalan saat tab/toggle aktif.
+task.spawn(function()
+    while Gui.Parent do
+        pcall(function()
+            if State.globalEnabled and updateGlobalPanel then
+                updateGlobalPanel(false)
+            end
+        end)
+        -- minimal 3 detik biar gak spam server API walau slider sempat lebih kecil
+        task.wait(math.max(3, State.globalInterval or 5))
     end
 end)
 
