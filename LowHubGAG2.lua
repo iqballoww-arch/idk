@@ -82,6 +82,7 @@ local SAVED_KEYS = {
     "selectedFind", "orderFind",
     "selectedTame", "orderTame",
     "autoHop", "autoRejoin", "petFinder",
+    "autoTame", "protectPet",
     "hopInterval", "scanWait", "skipFull",
     "finderInterval", "tameInterval", "maxPrice",
     "lastHopAt",
@@ -786,7 +787,7 @@ local function addSlider(parent, title, desc, minv, maxv, default, cb)
     end)
 end
 
-local function addTextbox(parent, title, desc, placeholder, cb)
+local function addTextbox(parent, title, desc, placeholder, default, cb)
     local f = rowBase(parent, 56)
     rowTitle(f, title, desc)
     local box = Instance.new("TextBox")
@@ -797,7 +798,7 @@ local function addTextbox(parent, title, desc, placeholder, cb)
     box.TextSize = 12
     box.TextColor3 = Theme.Text
     box.PlaceholderText = placeholder
-    box.Text = ""
+    box.Text = default or ""
     box.ClearTextOnFocus = false
     box.Parent = f
     corner(box, 6)
@@ -897,6 +898,7 @@ local function addMultiDropdown(parent, title, desc, stateTbl, orderTbl, getOpti
                     end
                     opt.BackgroundColor3 = stateTbl[name] and Theme.Accent2 or Theme.Bg
                     summary()
+                    saveConfig()
                 end)
             end
         end
@@ -976,16 +978,17 @@ do
         State.selectedTame, State.orderTame, getAllPetNames)
     addTextbox(page, "Pet Max Price",
         "Skip pet di atas harga ini. Support k/m/b. Kosong = no limit.",
-        "50000000", function(t) State.maxPrice = parsePrice(t) end)
+        "50000000", (State.maxPrice and State.maxPrice > 0) and tostring(State.maxPrice) or "",
+        function(t) State.maxPrice = parsePrice(t) saveConfig() end)
     addSlider(page, "Tame Interval",
         "Delay loop (detik). Kecil = cepat, besar = ringan FPS.",
-        0.05, 3, State.tameInterval, function(v) State.tameInterval = v end)
+        0.05, 3, State.tameInterval, function(v) State.tameInterval = v saveConfig() end)
     addToggle(page, "Auto Tame Wild Pet",
-        "Pindah ke pet yang cocok lalu tame.", false,
-        function(on) State.autoTame = on end)
+        "Pindah ke pet yang cocok lalu tame.", State.autoTame,
+        function(on) State.autoTame = on saveConfig() end)
     addToggle(page, "Protect Ur Tame Pet",
-        "Ikuti pet pending lalu pakai shovel aura di dekatnya.", false,
-        function(on) State.protectPet = on end)
+        "Ikuti pet pending lalu pakai shovel aura di dekatnya.", State.protectPet,
+        function(on) State.protectPet = on saveConfig() end)
 end
 
 -- ----- Pet Finder tab -----
@@ -997,11 +1000,12 @@ do
         State.selectedFind, State.orderFind, getAllPetNames)
     addSlider(page, "Pet Finder Interval",
         "Delay loop (detik). Kecil = cepat, besar = ringan FPS.",
-        0.05, 3, State.finderInterval, function(v) State.finderInterval = v end)
+        0.05, 3, State.finderInterval, function(v) State.finderInterval = v saveConfig() end)
     addToggle(page, "Pet Finder",
-        "Tampilkan panel lokasi pet terpilih.", false,
+        "Tampilkan panel lokasi pet terpilih.", State.petFinder,
         function(on)
             State.petFinder = on
+            saveConfig()
             if FinderPanel then FinderPanel.Visible = on end
         end)
     RejoinToggleSet = addToggle(page, "Auto Join Server",
@@ -1111,7 +1115,7 @@ do
     FinderPanel.Position = UDim2.new(0, 20, 0.5, -60)
     FinderPanel.BackgroundColor3 = Theme.Bg
     FinderPanel.BorderSizePixel = 0
-    FinderPanel.Visible = false
+    FinderPanel.Visible = State.petFinder
     FinderPanel.Parent = Gui
     corner(FinderPanel, 10)
     stroke(FinderPanel, Theme.Accent, 1.5)
