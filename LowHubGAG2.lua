@@ -73,6 +73,18 @@ local State = {
     -- Webhook
     webhookUrl     = "",
     webhookEnabled = false,
+    -- Movement / Defending
+    moveSpeed    = 190,  -- studs/s untuk tween ke pet (Auto Tame / Protect)
+    walkSpeedVal = 20,   -- nilai WalkSpeed saat Speed Walk ON
+    speedWalk    = false,
+    infJump      = false,
+    noClip       = false,
+    antiVoid     = false,
+    antiSit      = false,
+    antiFling    = false,
+    antiShovel   = false,
+    flySpeed     = 50,
+    fly          = false,
 }
 
 -- ===== Config Persistence (bertahan lintas server / teleport) =====
@@ -89,6 +101,8 @@ local SAVED_KEYS = {
     "finderInterval", "tameInterval", "maxPrice",
     "lastHopAt",
     "webhookUrl", "webhookEnabled",
+    "moveSpeed", "walkSpeedVal", "flySpeed",
+    "speedWalk", "infJump", "antiVoid", "antiSit", "antiFling", "antiShovel",
 }
 
 local function saveConfig()
@@ -262,7 +276,6 @@ end
 -- pet jalan-jalan, kalau pakai posisi beku tween jadi kejar-kejaran / bolak-balik.
 local tweenActive
 local STEP = 55          -- langkah lebih besar (dulu 28)
-local MOVE_SPEED = 190   -- stud/s, jauh lebih cepat (dulu ~90)
 
 local function resolveTargetPos(target)
     if typeof(target) == "Vector3" then return target end
@@ -297,7 +310,7 @@ local function tweenToPet(target)
         pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
         local stepLen = math.min(dist, STEP)
         local nextPos = root.Position + toGo.Unit * stepLen
-        local dur = stepLen / MOVE_SPEED
+        local dur = stepLen / math.max(20, State.moveSpeed or 190)
         tweenActive = TweenService:Create(root,
             TweenInfo.new(dur, Enum.EasingStyle.Linear),
             { CFrame = CFrame.new(nextPos) })
@@ -1045,6 +1058,7 @@ end
 addTab("Info",    "Info")
 addTab("Wild",    "Wild Pets")
 addTab("Finder",  "Pet Finder")
+addTab("Defend",  "Defending")
 addTab("Webhook", "Webhook")
 
 -- ----- Info tab -----
@@ -1109,6 +1123,9 @@ do
     addSlider(page, "Tame Interval",
         "Delay loop (detik). Kecil = cepat, besar = ringan FPS.",
         0.05, 3, State.tameInterval, function(v) State.tameInterval = v saveConfig() end)
+    addSlider(page, "Move Speed",
+        "Kecepatan tween ke pet (studs/s). Besar = cepat, terlalu besar bisa snapback.",
+        20, 300, State.moveSpeed, function(v) State.moveSpeed = v saveConfig() end)
     addToggle(page, "Auto Tame Wild Pet",
         "Pindah ke pet yang cocok lalu tame.", State.autoTame,
         function(on) State.autoTame = on saveConfig() end)
@@ -1141,6 +1158,48 @@ do
             saveConfig()
             updateHopOffVisible()
         end)
+end
+
+-- ----- Defending tab (movement / proteksi) -----
+do
+    local page = Pages.Defend
+    addTextbox(page, "Speed Walk Value",
+        "Nilai WalkSpeed saat Speed Walk ON (default game = 16).",
+        "20", tostring(State.walkSpeedVal),
+        function(t)
+            local n = tonumber((t or ""):gsub("%s+", ""))
+            if n then State.walkSpeedVal = math.clamp(n, 1, 500) saveConfig() end
+        end)
+    addToggle(page, "Speed Walk",
+        "Naikkan WalkSpeed karakter.", State.speedWalk,
+        function(on) State.speedWalk = on saveConfig() end)
+    addToggle(page, "Infinite Jump",
+        "Bisa lompat di udara tanpa batas.", State.infJump,
+        function(on) State.infJump = on saveConfig() end)
+    addToggle(page, "No Clip",
+        "Tembus tembok/objek. Reset tiap reload (tidak persist).", State.noClip,
+        function(on) State.noClip = on end)
+    addToggle(page, "Anti Void",
+        "Balik ke posisi aman kalau jatuh ke void.", State.antiVoid,
+        function(on) State.antiVoid = on saveConfig() end)
+    addToggle(page, "Anti Sit",
+        "Auto berdiri lagi kalau dipaksa duduk.", State.antiSit,
+        function(on) State.antiSit = on saveConfig() end)
+    addToggle(page, "Anti Fling",
+        "Redam putaran/lempar dari player lain.", State.antiFling,
+        function(on) State.antiFling = on saveConfig() end)
+    addToggle(page, "Anti Shovel",
+        "Lawan efek shovel orang lain (best-effort).", State.antiShovel,
+        function(on) State.antiShovel = on saveConfig() end)
+    addTextbox(page, "Fly Speed",
+        "Kecepatan terbang.", "50", tostring(State.flySpeed),
+        function(t)
+            local n = tonumber((t or ""):gsub("%s+", ""))
+            if n then State.flySpeed = math.clamp(n, 1, 500) saveConfig() end
+        end)
+    addToggle(page, "Fly",
+        "Terbang pakai WASD + Space/Shift. Reset tiap reload.", State.fly,
+        function(on) State.fly = on end)
 end
 
 -- ----- Webhook tab -----
@@ -1641,5 +1700,117 @@ task.spawn(function()
         task.wait(math.max(3, State.finderInterval or 5))
     end
 end)
+
+-- ===== Defending / Movement =====
+do
+    -- Infinite Jump: tiap minta lompat, paksa state Jumping walau di udara.
+    UserInputService.JumpRequest:Connect(function()
+        if not State.infJump then return end
+        safeCall(function()
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+            if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end)
+    end)
+
+    -- No Clip: matikan collision semua part tiap frame saat aktif.
+    RunService.Stepped:Connect(function()
+        if not State.noClip then return end
+        safeCall(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+            for _, d in ipairs(char:GetDescendants()) do
+                if d:IsA("BasePart") and d.CanCollide then
+                    d.CanCollide = false
+                end
+            end
+        end)
+    end)
+
+    -- Fly: BodyVelocity + BodyGyro, arah dari kamera + WASD, Space naik / Shift turun.
+    local flyBV, flyBG
+    local function stopFly()
+        if flyBV then pcall(function() flyBV:Destroy() end) flyBV = nil end
+        if flyBG then pcall(function() flyBG:Destroy() end) flyBG = nil end
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+        if hum then pcall(function() hum.PlatformStand = false end) end
+    end
+    RunService.RenderStepped:Connect(function()
+        if not State.fly then
+            if flyBV then stopFly() end
+            return
+        end
+        safeCall(function()
+            local root = getRoot()
+            if not root then return end
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+            local cam = workspace.CurrentCamera
+            if not flyBV then
+                flyBV = Instance.new("BodyVelocity")
+                flyBV.MaxForce = Vector3.new(1, 1, 1) * 9e9
+                flyBV.P = 1e4
+                flyBV.Velocity = Vector3.zero
+                flyBV.Parent = root
+                flyBG = Instance.new("BodyGyro")
+                flyBG.MaxForce = Vector3.new(1, 1, 1) * 9e9
+                flyBG.P = 1e4
+                flyBG.Parent = root
+            end
+            if hum then hum.PlatformStand = true end
+            local dir = Vector3.zero
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0, 1, 0) end
+            if dir.Magnitude > 0 then dir = dir.Unit end
+            flyBV.Velocity = dir * math.max(1, State.flySpeed or 50)
+            flyBG.CFrame = cam.CFrame
+        end)
+    end)
+
+    -- Loop proteksi: speed walk, anti sit, anti void, anti fling, anti shovel.
+    local lastSafe
+    task.spawn(function()
+        while Gui.Parent do
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+                local root = getRoot()
+                if hum then
+                    if State.speedWalk then
+                        hum.WalkSpeed = State.walkSpeedVal
+                    elseif hum.WalkSpeed ~= 16 then
+                        hum.WalkSpeed = 16  -- balik ke default saat Speed Walk OFF
+                    end
+                    if State.antiSit and hum.Sit then hum.Sit = false end
+                end
+                if root then
+                    -- Anti fling/shovel: redam putaran & lemparan dari luar.
+                    if State.antiFling or State.antiShovel then
+                        root.AssemblyAngularVelocity = Vector3.zero
+                        if State.antiShovel then
+                            root.AssemblyLinearVelocity = Vector3.zero
+                        end
+                    end
+                    -- Anti void: simpan posisi aman, balikin kalau jatuh ke void.
+                    if State.antiVoid then
+                        local y = root.Position.Y
+                        if y > -50 then
+                            lastSafe = root.Position
+                        elseif lastSafe and y < -150 then
+                            root.CFrame = CFrame.new(lastSafe + Vector3.new(0, 5, 0))
+                            root.AssemblyLinearVelocity = Vector3.zero
+                        end
+                    end
+                end
+            end)
+            task.wait(0.1)
+        end
+    end)
+end
 
 print("[Low Hub] GAG2 Wild Pet Finder loaded. (FIX build)")
