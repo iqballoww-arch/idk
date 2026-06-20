@@ -47,6 +47,11 @@ local State = {
     petFinder    = false,
     finderInterval = 2,
     autoRejoin   = false,
+    -- Auto Hop
+    autoHop      = false,
+    hopInterval  = 8,
+    scanWait     = 4,
+    skipFull     = true,
 }
 
 -- Known pet names (fallback kalau scan kosong, mis. baru join)
@@ -157,6 +162,15 @@ local function scanWildPets()
         end
     end
     return out
+end
+
+-- Cek apakah salah satu pet dari State.selectedFind ada di server sekarang.
+local function isTargetFound()
+    if next(State.selectedFind) == nil then return false end
+    for _, p in ipairs(scanWildPets()) do
+        if State.selectedFind[p.name] then return true end
+    end
+    return false
 end
 
 -- ===== Character / movement =====
@@ -613,14 +627,21 @@ local function addToggle(parent, title, desc, default, cb)
     knob.Parent = sw
     corner(knob, 9)
     local on = default
-    sw.MouseButton1Click:Connect(function()
-        on = not on
+    local function setVisual(state)
+        on = state
         TweenService:Create(sw, TweenInfo.new(0.15), {
             BackgroundColor3 = on and Theme.Accent or Theme.Off}):Play()
         TweenService:Create(knob, TweenInfo.new(0.15), {
             Position = on and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)}):Play()
+    end
+    sw.MouseButton1Click:Connect(function()
+        setVisual(not on)
         cb(on)
     end)
+    -- Return setVisual sebagai opsional ketiga: dipakai buat sinkronisasi visual
+    -- dari luar (mis. panel quick-off Auto Hop) tanpa trigger cb lagi.
+    -- Caller lama yang tidak ambil return value ini tetap jalan normal.
+    return sw, setVisual
 end
 
 local function addSlider(parent, title, desc, minv, maxv, default, cb)
@@ -877,6 +898,8 @@ end
 
 -- ----- Pet Finder tab -----
 local FinderPanel, updateFinderPanel
+local setAutoHopVisual
+local AutoHopPanel
 do
     local page = Pages.Finder
     addMultiDropdown(page, "Finder Pet Name",
@@ -894,6 +917,22 @@ do
     addToggle(page, "Auto Join Server",
         "Kalau pet tidak ada di server ini, pindah server otomatis.", false,
         function(on) State.autoRejoin = on end)
+    local _, sahv = addToggle(page, "Auto Hop Server",
+        "Hop server cari pet di Finder. Ketemu = stop & diam (toggle tetap ON), hilang = hop lagi.",
+        State.autoHop, function(on)
+            State.autoHop = on
+            if AutoHopPanel then AutoHopPanel.Visible = on end
+        end)
+    setAutoHopVisual = sahv
+    addSlider(page, "Hop Interval",
+        "Jeda antar hop (detik). Besar = aman dari rate-limit.",
+        3, 30, State.hopInterval, function(v) State.hopInterval = v end)
+    addSlider(page, "Scan Wait",
+        "Delay setelah join sebelum scan (detik), biar map ke-load.",
+        1, 15, State.scanWait, function(v) State.scanWait = v end)
+    addToggle(page, "Skip Full Server",
+        "Lewati server penuh saat hop.", State.skipFull,
+        function(on) State.skipFull = on end)
     local hopBtn = Instance.new("TextButton")
     hopBtn.Size = UDim2.new(1, -4, 0, 36)
     hopBtn.BackgroundColor3 = Theme.Accent2
@@ -1077,6 +1116,58 @@ do
     end
 end
 
+-- ===== Floating Auto Hop Quick-Off Panel =====
+-- Cuma muncul saat State.autoHop ON, biar bisa cepat dimatiin tanpa buka tab Finder.
+do
+    AutoHopPanel = Instance.new("Frame")
+    AutoHopPanel.Name = "AutoHopPanel"
+    AutoHopPanel.Size = UDim2.fromOffset(190, 44)
+    AutoHopPanel.Position = UDim2.new(0, 20, 0.5, 80)
+    AutoHopPanel.BackgroundColor3 = Theme.Bg
+    AutoHopPanel.BorderSizePixel = 0
+    AutoHopPanel.Visible = State.autoHop
+    AutoHopPanel.Parent = Gui
+    corner(AutoHopPanel, 10)
+    stroke(AutoHopPanel, Theme.Accent, 1.5)
+    makeDraggable(AutoHopPanel, AutoHopPanel)
+
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.fromOffset(8, 8)
+    dot.Position = UDim2.fromOffset(12, 18)
+    dot.BackgroundColor3 = Theme.Good
+    dot.BorderSizePixel = 0
+    dot.Parent = AutoHopPanel
+    corner(dot, 4)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -90, 1, 0)
+    lbl.Position = UDim2.fromOffset(28, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 12
+    lbl.TextColor3 = Theme.Text
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = "Auto Hop ON"
+    lbl.Parent = AutoHopPanel
+
+    local offBtn = Instance.new("TextButton")
+    offBtn.Size = UDim2.fromOffset(56, 28)
+    offBtn.Position = UDim2.new(1, -64, 0.5, -14)
+    offBtn.BackgroundColor3 = Theme.Bad
+    offBtn.Text = "OFF"
+    offBtn.Font = Enum.Font.GothamBold
+    offBtn.TextSize = 12
+    offBtn.TextColor3 = Theme.Text
+    offBtn.AutoButtonColor = true
+    offBtn.Parent = AutoHopPanel
+    corner(offBtn, 7)
+    offBtn.MouseButton1Click:Connect(function()
+        State.autoHop = false
+        if setAutoHopVisual then setAutoHopVisual(false) end
+        AutoHopPanel.Visible = false
+    end)
+end
+
 -- ===== Server Hop =====
 local function hopServer()
     local ok = pcall(function()
@@ -1091,7 +1182,9 @@ local function hopServer()
         local data = HttpService:JSONDecode(res.Body)
         local mine = game.JobId
         for _, s in ipairs(data.data or {}) do
-            if s.id ~= mine and s.playing < s.maxPlayers then
+            local hasSlot = s.playing < s.maxPlayers
+            local okServer = State.skipFull and hasSlot or (s.playing <= s.maxPlayers)
+            if s.id ~= mine and okServer then
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, LocalPlayer)
                 return
             end
@@ -1204,6 +1297,27 @@ task.spawn(function()
             hopServer()
         end
         task.wait(State.finderInterval)
+    end
+end)
+
+-- Auto Hop Server: cari wild pet dari Finder list, hop terus sampai ketemu,
+-- diam selama pet masih ada, hop lagi begitu hilang.
+task.spawn(function()
+    while Gui.Parent do
+        if State.autoHop then
+            if isTargetFound() then
+                -- pet masih ada di server ini, diam dulu
+                task.wait(1)
+            else
+                hopServer()
+                task.wait(State.scanWait)
+                if State.autoHop and not isTargetFound() then
+                    task.wait(State.hopInterval)
+                end
+            end
+        else
+            task.wait(1)
+        end
     end
 end)
 
